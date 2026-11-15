@@ -15,7 +15,7 @@ characters, plus public game data. Everything it does is read-only.
 | `can_i_fly` | Missing skills and training time for a ship, module or pasted fit | yes |
 | `market_price` | Best buy/sell at Jita, Amarr, Dodixie, Rens or Hek, or all five compared, with the 30-day average | no |
 | `item_info` | Group, volume, in-game description | no |
-| `system_info` | Security, region, last hour's jumps and kills | no |
+| `system_info` | Security, region, last hour's jumps and kills. For wormholes, class and zKillboard's recent kills | no |
 | `route` | Gate route with security and recent ship kills for each jump | no |
 
 Files:
@@ -324,20 +324,29 @@ no kill or jump figures for wormhole space, and an earlier version of the
 server reported that gap as zero. A similar answer later got me jumped by
 two people in their own home.
 
-`system_info` now gives no activity for a wormhole system. It says the
-figures don't exist and points to [zKillboard](https://zkillboard.com/)
-for recent kills and [anoik.is](https://anoik.is/) for class, statics and
-effects. An assistant with web access can follow those. One without will
-at least tell you it can't see.
+For a wormhole system, `system_info` now asks
+[zKillboard](https://zkillboard.com/) instead. It gives the kills recorded
+there in the last hour, day and week, and the corporations doing the
+killing, who are often the people who live there. It also gives the
+wormhole's class. No recorded kills still doesn't mean nobody is home, and
+the tool says so.
 
-That is the rule for anything outside ESI: admit the gap and name one
-place to look, rather than add a tool for it.
+Statics and effects aren't in either source, so for those it names
+[anoik.is](https://anoik.is/) and leaves it to you. That site turns away
+automated requests, so open it yourself.
+
+That is the rule for anything outside ESI: admit the gap, fill it from
+one honest source if an existing tool can, and otherwise name one place
+to look. No new tools for it.
 
 ## Security
 
 - **What it can read:** for each character you sign in, their skills and
   skill queue, wallet balance and journal, location, ship, training attributes,
   online status and assets. Nothing else, and only what the seven scopes above allow.
+- **Who it talks to:** CCP's login and API servers, and zKillboard when
+  you ask about a wormhole system. zKillboard is sent the system's ID and
+  the `EVE_USER_AGENT` you set, and nothing about your characters.
 - **What it can change:** nothing. Every scope is read-only and the server
   makes no writes to EVE.
 - **Where secrets live:** your app's ID and secret in `.env`, your sign-in
@@ -360,11 +369,12 @@ new permission, add it to `SCOPES` in `eve_common.py`, tick it on the app,
 and run `auth.py` again.
 
 There are small offline tests of the security-status rounding, the fit
-parser and the training-time sums:
+parser, the training-time sums and the wormhole kill summary:
 
 ```bash
 .venv/bin/python tests/test_sec.py
 .venv/bin/python tests/test_fit.py
+.venv/bin/python tests/test_kills.py
 ```
 
 ## If something goes wrong

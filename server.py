@@ -20,15 +20,15 @@ Use the project's own Python for both: .venv/bin/python on Linux/macOS,
 import re
 import sys
 import time
-from collections import defaultdict
-from datetime import datetime, timezone
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from eve_common import (PATCH_NOTES, esi_get, esi_get_all, esi_post, find_id,
-                        load_tokens, names, setting)
+                        load_tokens, names, setting, zkill_system_kills)
 
 mcp = MCPServer(
     "eve",
@@ -207,6 +207,38 @@ def fit_items(text):
             if part and part.lower() not in (f.lower() for f in found):
                 found.append(part)
     return found
+
+
+# Wormhole regions are named by class: A-R00001 is C1 space, B- is C2
+# and so on. ESI has no field for the class, so the name is the way in.
+WORMHOLE_CLASSES = {"A": "C1", "B": "C2", "C": "C3", "D": "C4", "E": "C5",
+                    "F": "C6", "G": "Thera", "H": "C13 (shattered)",
+                    "K": "Drifter"}
+
+
+def is_wormhole(system_id):
+    return 31_000_000 <= system_id < 32_000_000
+
+
+def kill_summary(kills, now):
+    """Count a week of zKillboard kills by age and by who did the killing.
+    Attackers come back as {corporation_id: kills}, busiest first."""
+    times = sorted((datetime.fromisoformat(k["killmail_time"].replace("Z", "+00:00"))
+                    for k in kills if "killmail_time" in k), reverse=True)
+    attackers = Counter()
+    for k in kills:
+        # NPCs have no character, and a corporation counts once per kill
+        # however many of its pilots were on it.
+        attackers.update({a["corporation_id"] for a in k.get("attackers", [])
+                          if "character_id" in a and "corporation_id" in a})
+    return {
+        "kills_last_hour": sum(1 for t in times if now - t <= timedelta(hours=1)),
+        "kills_last_24h": sum(1 for t in times if now - t <= timedelta(hours=24)),
+        # zKillboard sends 200 at a time, so a full page means "at least".
+        "kills_last_7d": "200+" if len(kills) >= 200 else len(kills),
+        "last_kill": times[0].strftime("%Y-%m-%dT%H:%M:%SZ") if times else None,
+        "attackers": attackers.most_common(3),
+    }
 
 
 # ---------- your characters ----------
@@ -479,8 +511,10 @@ def item_info(item_name: str) -> dict:
 def system_info(system_name: str) -> dict:
     """A solar system's security, constellation, region, number of
     stations, and activity in the last hour (jumps, kills). CCP publishes
-    no activity for wormhole systems. For those, last_hour is empty and
-    the note says where to look instead."""
+    no activity for wormhole systems. For those it gives the wormhole
+    class and zKillboard's recorded kills instead: last hour, day and
+    week, and the corporations doing the killing, who are often the
+    residents."""
     system_id, proper = find_id(system_name, "systems")
     s = system(system_id)
     constellation = esi_get(f"/universe/constellations/{s['constellation_id']}/")
@@ -493,16 +527,31 @@ def system_info(system_name: str) -> dict:
         "region": region["name"],
         "stations": len(s.get("stations", [])),
     }
-    # Wormhole systems (IDs 31,000,000 and up) are never in CCP's kill or
-    # jump lists. Reporting that as zero would read as "quiet", which is
-    # the last thing to tell someone sitting in one.
-    if 31_000_000 <= system_id < 32_000_000:
+    # Wormhole systems are never in CCP's kill or jump lists. Reporting
+    # that as zero would read as "quiet", which is the last thing to tell
+    # someone sitting in one.
+    if is_wormhole(system_id):
+        result["class"] = WORMHOLE_CLASSES.get(region["name"][:1])
         result["last_hour"] = None
+        try:
+            summary = kill_summary(zkill_system_kills(system_id),
+                                   datetime.now(timezone.utc))
+        except (httpx.HTTPError, ValueError):
+            result["note"] = (
+                "CCP publishes no jump or kill figures for wormhole space "
+                "and zKillboard didn't answer, so don't assume it is quiet. "
+                f"Recent kills: https://zkillboard.com/system/{system_id}/ . "
+                "Statics and effects: anoik.is.")
+            return result
+        corporations = names([corp for corp, _ in summary["attackers"]])
+        summary["attackers_last_7d"] = [
+            {"corporation": corporations[corp], "kills": count}
+            for corp, count in summary.pop("attackers")]
+        result["zkillboard"] = summary
         result["note"] = (
-            "CCP publishes no jump or kill figures for wormhole space, so "
-            "don't assume it is quiet. Recent kills: "
-            f"https://zkillboard.com/system/{system_id}/ . Class, statics "
-            "and effects: anoik.is.")
+            "CCP publishes no figures for wormhole space. These are kills "
+            "recorded by zKillboard. No kills doesn't mean nobody is home. "
+            "Statics and effects: anoik.is.")
         return result
     kills = next((k for k in esi_get("/universe/system_kills/")
                   if k["system_id"] == system_id), {})

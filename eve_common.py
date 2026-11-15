@@ -214,6 +214,17 @@ def esi_post(path, body):
     return r.json()
 
 
+def zkill_system_kills(system_id):
+    """The last week's kills in a system from zKillboard, newest first,
+    200 at most."""
+    # CCP publishes no activity for wormhole space. zKillboard does, and
+    # asks only for an honest User-Agent, which the client already sends.
+    r = http.get("https://zkillboard.com/api/kills/"
+                 f"solarSystemID/{system_id}/pastSeconds/604800/")
+    r.raise_for_status()
+    return r.json()
+
+
 # ---------- names ----------
 
 _names = {}  # id -> name, kept for as long as the server runs

@@ -25,9 +25,10 @@ Files:
 - `.env`: your app's ID and secret (you make this, git-ignored)
 - `tokens.json`: sign-in tokens (made by `auth.py`, git-ignored, keep it private)
 
-Tested with Python 3.13, mcp 2.3.0 and httpx 0.28.1 on Debian 13. It needs
-Python 3.10 or later. `requirements.lock` lists the exact versions of every
-package from that test, if you want to reproduce it.
+Tested with mcp 2.3.0 and httpx 0.28.1, on Python 3.13 (Debian 13) and
+Python 3.14 (macOS). It needs Python 3.10 or later. `requirements.lock`
+lists the exact versions of every package from the Debian test, if you
+want to reproduce it.
 
 ## Why MCP
 
@@ -90,7 +91,10 @@ Rules:
 - On Windows, use "py" instead of "python3", and .venv\Scripts\python.exe
   instead of .venv/bin/python.
 
-1. Check that "python3 --version" is 3.10 or later.
+1. Find a Python that is 3.10 or later. Try "python3 --version" first,
+   then python3.14, python3.13, python3.12, python3.11 and python3.10.
+   Use the first one that qualifies wherever the steps below say
+   "python3". If there is none, stop and tell me to install one.
 2. If ~/eve-mcp already exists, stop and ask me. Otherwise run:
    git clone https://github.com/moconnelldavidson/eve-mcp.git ~/eve-mcp
 3. In ~/eve-mcp, run:
@@ -152,6 +156,10 @@ python3 -m venv .venv
 
 On Debian or Ubuntu, if the first command complains that `venv` is missing,
 run `sudo apt install python3-venv` and try again.
+
+On macOS, the `python3` that Apple ships is 3.9, which is too old. Check
+with `python3 --version`. If you have a newer one installed, use its full
+name in the first command, such as `python3.13 -m venv .venv`.
 
 Windows, in PowerShell. If `py` isn't found, install Python from python.org
 and tick "Add to PATH".

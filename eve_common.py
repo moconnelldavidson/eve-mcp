@@ -239,7 +239,11 @@ def zkill_system_kills(system_id):
     r = http.get("https://zkillboard.com/api/kills/"
                  f"solarSystemID/{system_id}/pastSeconds/604800/")
     r.raise_for_status()
-    return r.json()
+    kills = r.json()
+    # zKillboard can answer 200 with an error object in place of the list.
+    if not isinstance(kills, list):
+        raise ValueError("zKillboard sent something other than a list of kills.")
+    return kills
 
 
 _killmails = {}

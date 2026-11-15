@@ -17,6 +17,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import eve_common  # noqa: E402
 from server import (WORMHOLE_CLASSES, fill_details, is_wormhole,  # noqa: E402
                     kill_summary)
 
@@ -125,6 +126,35 @@ def test_esi_failing_leaves_the_counts_unknown():
 
     s = kill_summary(fill_details(bare_page(), NOW, fetch), NOW)
     assert s["kills_last_hour"] is None and s["kills_last_24h"] is None
+
+
+def test_esi_giving_up_after_retries_leaves_the_counts_unknown():
+    def fetch(killmail_id, killmail_hash):
+        raise RuntimeError("EVE's API isn't answering (503).")
+
+    s = kill_summary(fill_details(bare_page(), NOW, fetch), NOW)
+    assert s["kills_last_hour"] is None and s["kills_last_24h"] is None
+    assert s["kills_last_7d"] == 4
+
+
+def test_an_error_object_from_zkillboard_is_refused():
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"error": "Invalid request"}
+
+    real = eve_common.http.get
+    eve_common.http.get = lambda *args, **kwargs: Reply()
+    try:
+        eve_common.zkill_system_kills(31000005)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an error object should raise ValueError")
+    finally:
+        eve_common.http.get = real
 
 
 def test_a_full_page_is_reported_as_at_least():

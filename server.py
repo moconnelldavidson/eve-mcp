@@ -244,7 +244,9 @@ def fill_details(kills, now, fetch=killmail, limit=30):
                 break
             try:
                 kill.update(fetch(kill["killmail_id"], kill["zkb"]["hash"]))
-            except (httpx.HTTPError, KeyError):
+            # RuntimeError is what ESI being down or rate-limiting looks
+            # like once the retries are spent.
+            except (httpx.HTTPError, KeyError, RuntimeError):
                 break
             fetched += 1
         if now - kill_time(kill) > timedelta(hours=24):

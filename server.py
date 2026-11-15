@@ -475,29 +475,43 @@ def item_info(item_name: str) -> dict:
 @mcp.tool(annotations=READ_ONLY)
 def system_info(system_name: str) -> dict:
     """A solar system's security, constellation, region, number of
-    stations, and activity in the last hour (jumps, kills)."""
+    stations, and activity in the last hour (jumps, kills). CCP publishes
+    no activity for wormhole systems. For those, last_hour is empty and
+    the note says where to look instead."""
     system_id, proper = find_id(system_name, "systems")
     s = system(system_id)
     constellation = esi_get(f"/universe/constellations/{s['constellation_id']}/")
     region = esi_get(f"/universe/regions/{constellation['region_id']}/")
-    kills = next((k for k in esi_get("/universe/system_kills/")
-                  if k["system_id"] == system_id), {})
-    jumps = next((j for j in esi_get("/universe/system_jumps/")
-                  if j["system_id"] == system_id), {})
-    return {
+    result = {
         "system": proper,
         "security": sec(s["security_status"]),
         "band": sec_band(s["security_status"]),
         "constellation": constellation["name"],
         "region": region["name"],
         "stations": len(s.get("stations", [])),
-        "last_hour": {
-            "jumps": jumps.get("ship_jumps", 0),
-            "ship_kills": kills.get("ship_kills", 0),
-            "pod_kills": kills.get("pod_kills", 0),
-            "npc_kills": kills.get("npc_kills", 0),
-        },
     }
+    # Wormhole systems (IDs 31,000,000 and up) are never in CCP's kill or
+    # jump lists. Reporting that as zero would read as "quiet", which is
+    # the last thing to tell someone sitting in one.
+    if 31_000_000 <= system_id < 32_000_000:
+        result["last_hour"] = None
+        result["note"] = (
+            "CCP publishes no jump or kill figures for wormhole space, so "
+            "don't assume it is quiet. Recent kills: "
+            f"https://zkillboard.com/system/{system_id}/ . Class, statics "
+            "and effects: anoik.is.")
+        return result
+    kills = next((k for k in esi_get("/universe/system_kills/")
+                  if k["system_id"] == system_id), {})
+    jumps = next((j for j in esi_get("/universe/system_jumps/")
+                  if j["system_id"] == system_id), {})
+    result["last_hour"] = {
+        "jumps": jumps.get("ship_jumps", 0),
+        "ship_kills": kills.get("ship_kills", 0),
+        "pod_kills": kills.get("pod_kills", 0),
+        "npc_kills": kills.get("npc_kills", 0),
+    }
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)

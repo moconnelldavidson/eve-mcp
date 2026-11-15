@@ -172,9 +172,14 @@ def _get(path, char_id=None, params=None):
         remain = r.headers.get("X-ESI-Error-Limit-Remain")
         if remain is not None and int(remain) < 10:
             time.sleep(int(r.headers.get("X-ESI-Error-Limit-Reset", 60)))
-        if r.status_code in (502, 503, 504) and attempt < 2:
-            time.sleep(3 * (attempt + 1))
-            continue
+        if r.status_code in (502, 503, 504):
+            if attempt < 2:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise RuntimeError(
+                f"EVE's API isn't answering ({r.status_code}). The servers "
+                "restart daily at 11:00 UTC and are down for a short while. "
+                "At any other time it is an outage on CCP's side.")
         if r.status_code == 403 and char_id:
             raise RuntimeError(
                 f"EVE refused {path} (403). The sign-in probably lacks the "

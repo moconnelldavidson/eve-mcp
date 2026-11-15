@@ -19,9 +19,13 @@ Use the project's own Python for both: .venv/bin/python on Linux/macOS,
 
 import re
 import sys
+import time
 from collections import defaultdict
+from datetime import datetime, timezone
 
+import httpx
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from eve_common import (esi_get, esi_get_all, find_id, load_tokens, names,
                         setting)
@@ -32,9 +36,16 @@ mcp = MCPServer(
         "Live EVE Online data from CCP's ESI API: the user's own characters "
         "(skills, skill queue, wallet, location, assets) and public game data "
         "(market prices at trade hubs, item info, systems, routes). "
-        "Character tools default to the user's main character."
+        "Character tools default to the user's main character. "
+        "Use these tools for anything about the current state of the game or "
+        "the user's characters, rather than answering from memory. "
+        "Reply in ordinary conversational prose and mention only the findings "
+        "that matter. Don't announce tool calls or recite raw fields."
     ),
 )
+
+# Every tool only reads. Saying so lets a client skip its "allow this?" prompt.
+READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 HUBS = {  # name: (region ID, station ID)
     "jita": (10000002, 60003760),     # Jita IV - Moon 4 - Caldari Navy Assembly Plant
@@ -88,15 +99,55 @@ def isk(amount):
     return f"{amount:,.2f} ISK"
 
 
+_prices = {"fetched": 0, "by_type": {}}
+
+
+def average_prices():
+    """CCP's average price for every item type, as {type_id: ISK}."""
+    # The list covers the whole game and runs to over a megabyte, so keep
+    # it for an hour rather than fetch it on every assets call.
+    if time.time() - _prices["fetched"] > 3600:
+        _prices["by_type"] = {p["type_id"]: p.get("average_price", 0)
+                              for p in esi_get("/markets/prices/")}
+        _prices["fetched"] = time.time()
+    return _prices["by_type"]
+
+
+def hub_prices(type_id, hub):
+    """One hub's prices for an item, plus its lowest sell price as a number."""
+    region_id, station_id = HUBS[hub]
+    orders = esi_get_all(f"/markets/{region_id}/orders/",
+                         params={"type_id": type_id, "order_type": "all"})
+    here = [o for o in orders if o["location_id"] == station_id]
+    sells = [o for o in here if not o["is_buy_order"]]
+    buys = [o for o in here if o["is_buy_order"]]
+    try:
+        history = esi_get(f"/markets/{region_id}/history/",
+                          params={"type_id": type_id})[-30:]
+    except httpx.HTTPStatusError:  # ESI refuses items that can't be sold
+        history = []
+    lowest = min(o["price"] for o in sells) if sells else None
+    return {
+        "hub": names([station_id])[station_id],
+        "best_sell": isk(lowest) if sells else None,
+        "best_buy": isk(max(o["price"] for o in buys)) if buys else None,
+        "units_for_sale": sum(o["volume_remain"] for o in sells),
+        "sell_orders": len(sells),
+        "buy_orders": len(buys),
+        "region_avg_30d": (isk(sum(d["average"] for d in history) / len(history))
+                           if history else None),
+    }, lowest
+
+
 # ---------- your characters ----------
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_characters() -> list[str]:
     """Names of the EVE characters signed in to this server."""
     return [t["name"] for t in load_tokens().values()]
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_skills(character_name: str | None = None,
                name_contains: str | None = None) -> dict:
     """A character's trained skills with levels and skill points, plus total
@@ -120,10 +171,11 @@ def get_skills(character_name: str | None = None,
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_skill_queue(character_name: str | None = None) -> dict:
     """A character's skill queue in order, with finish times (UTC), and when
-    the whole queue runs out."""
+    the whole queue runs out. now_utc is the current time, for working out
+    how long is left."""
     char_id, who = character(character_name)
     queue = sorted(esi_get(f"/characters/{char_id}/skillqueue/", char_id),
                    key=lambda q: q["queue_position"])
@@ -136,13 +188,14 @@ def get_skill_queue(character_name: str | None = None) -> dict:
     paused = bool(queue) and not queue[0].get("finish_date")
     return {
         "character": who,
+        "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "paused": paused,
         "queue_ends": entries[-1]["finishes"] if entries and not paused else None,
         "queue": entries,
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_wallet(character_name: str | None = None,
                recent_entries: int = 10) -> dict:
     """A character's ISK balance and their most recent wallet journal
@@ -163,7 +216,7 @@ def get_wallet(character_name: str | None = None,
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_location(character_name: str | None = None) -> dict:
     """Where a character is right now: system, security, docked station
     (if any), current ship, and whether they're online."""
@@ -193,13 +246,15 @@ def get_location(character_name: str | None = None) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_assets(character_name: str | None = None,
                name_contains: str | None = None,
-               max_rows: int = 150) -> dict:
+               max_rows: int = 100) -> dict:
     """A character's items, grouped by station or system, with what they're
-    inside (a ship, a container) where relevant. Use name_contains to find
-    something specific (e.g. "Buzzard", "probe")."""
+    inside (a ship, a container) where relevant. Most valuable first, so
+    max_rows keeps what matters. est_isk is an estimate from CCP's average
+    prices, not a quote. Use name_contains to find something specific
+    (e.g. "Buzzard", "probe")."""
     char_id, who = character(character_name)
     items = esi_get_all(f"/characters/{char_id}/assets/", char_id)
     by_id = {i["item_id"]: i for i in items}
@@ -214,63 +269,63 @@ def get_assets(character_name: str | None = None,
         return item["location_id"]
 
     type_names = names({i["type_id"] for i in items})
+    prices = average_prices()
 
-    rows = defaultdict(int)  # (place, inside, item) -> quantity
+    rows = defaultdict(lambda: [0, 0.0])  # (place, inside, item) -> [quantity, value]
     for i in items:
         item_name = type_names[i["type_id"]]
         if name_contains and name_contains.lower() not in item_name.lower():
             continue
         parent = by_id.get(i["location_id"])
         inside = type_names[parent["type_id"]] if parent else i["location_flag"]
-        rows[(top_location(i), inside, item_name)] += i["quantity"]
+        row = rows[(top_location(i), inside, item_name)]
+        row[0] += i["quantity"]
+        # A blueprint copy has the same type as the original, so the
+        # average price would value it at far more than it is worth.
+        if not i.get("is_blueprint_copy"):
+            row[1] += i["quantity"] * prices.get(i["type_id"], 0)
 
-    place_names = names({place for place, _, _ in rows})
-    grouped = defaultdict(list)
-    for (place, inside, item_name), qty in sorted(rows.items(), key=lambda r: r[0][2]):
+    top = sorted(rows.items(), key=lambda r: (-r[1][1], r[0][2]))[:max(max_rows, 0)]
+    place_names = names({place for (place, _, _), _ in top})
+    locations = defaultdict(list)
+    for (place, inside, item_name), (qty, value) in top:
         label = place_names[place]
         if label.startswith("#"):
             label = f"player structure {place}"
-        grouped[label].append({"item": item_name, "qty": qty, "in": inside})
+        locations[label].append({"item": item_name, "qty": qty, "in": inside,
+                                 "est_isk": round(value)})
 
-    total = len(rows)
-    result, shown = {}, 0
-    for place, entries in grouped.items():
-        room = max_rows - shown
-        if room <= 0:
-            break
-        result[place] = entries[:room]
-        shown += len(result[place])
-    return {"character": who, "rows": total, "shown": shown,
-            "truncated": shown < total, "locations": result}
+    return {"character": who, "rows": len(rows), "shown": len(top),
+            "truncated": len(top) < len(rows),
+            "est_total": isk(sum(value for _, value in rows.values())),
+            "locations": locations}
 
 
 # ---------- public game data ----------
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def market_price(item_name: str, hub: str = "Jita") -> dict:
     """Best sell and buy prices for an item at a trade hub station
-    (Jita, Amarr, Dodixie, Rens or Hek). Needs the exact item name."""
-    if hub.lower() not in HUBS:
-        raise ValueError(f"Hub must be one of: {', '.join(h.title() for h in HUBS)}")
-    region_id, station_id = HUBS[hub.lower()]
+    (Jita, Amarr, Dodixie, Rens or Hek), with the region's 30-day average
+    price for comparison. hub="all" compares the five hubs and names the
+    cheapest. Needs the exact item name."""
+    hub = hub.lower()
+    if hub != "all" and hub not in HUBS:
+        raise ValueError("Hub must be one of: "
+                         f"{', '.join(h.title() for h in HUBS)}, or all")
     type_id, proper = find_id(item_name, "inventory_types")
-    orders = esi_get_all(f"/markets/{region_id}/orders/",
-                         params={"type_id": type_id, "order_type": "all"})
-    here = [o for o in orders if o["location_id"] == station_id]
-    sells = [o for o in here if not o["is_buy_order"]]
-    buys = [o for o in here if o["is_buy_order"]]
+    if hub != "all":
+        return {"item": proper, **hub_prices(type_id, hub)[0]}
+    hubs = [hub_prices(type_id, h) for h in HUBS]
+    selling = [(lowest, prices["hub"]) for prices, lowest in hubs if lowest]
     return {
         "item": proper,
-        "hub": names([station_id])[station_id],
-        "best_sell": isk(min(o["price"] for o in sells)) if sells else None,
-        "best_buy": isk(max(o["price"] for o in buys)) if buys else None,
-        "units_for_sale": sum(o["volume_remain"] for o in sells),
-        "sell_orders": len(sells),
-        "buy_orders": len(buys),
+        "cheapest_sell": min(selling)[1] if selling else None,
+        "hubs": [prices for prices, _ in hubs],
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def item_info(item_name: str) -> dict:
     """What an item, ship or module is: its group, size and in-game
     description. Needs the exact name."""
@@ -288,7 +343,7 @@ def item_info(item_name: str) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def system_info(system_name: str) -> dict:
     """A solar system's security, constellation, region, number of
     stations, and activity in the last hour (jumps, kills)."""
@@ -316,27 +371,34 @@ def system_info(system_name: str) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def route(origin: str, destination: str, preference: str = "shortest") -> dict:
     """The gate route between two systems, with each system's security.
     preference: "shortest", "secure" (avoid low/nullsec) or "insecure".
-    Doesn't know about wormholes."""
+    Systems where ships died in the last hour say how many, which is the
+    nearest thing to a gate camp warning. Doesn't know about wormholes."""
     if preference not in ("shortest", "secure", "insecure"):
         raise ValueError('preference must be "shortest", "secure" or "insecure"')
     origin_id, origin_name = find_id(origin, "systems")
     dest_id, dest_name = find_id(destination, "systems")
     path = esi_get(f"/route/{origin_id}/{dest_id}/", params={"flag": preference})
     system_names = names(path)
+    kills = {k["system_id"]: k["ship_kills"]
+             for k in esi_get("/universe/system_kills/")}
     stops = []
     for sid in path:
         status = system(sid)["security_status"]
-        stops.append({"system": system_names[sid], "security": sec(status),
-                      "band": sec_band(status)})
+        stop = {"system": system_names[sid], "security": sec(status),
+                "band": sec_band(status)}
+        if kills.get(sid):
+            stop["ship_kills_last_hour"] = kills[sid]
+        stops.append(stop)
     return {
         "from": origin_name,
         "to": dest_name,
         "jumps": len(path) - 1,
         "lowsec_or_worse": sum(1 for s in stops if s["band"] != "highsec"),
+        "ship_kills_last_hour": sum(kills.get(sid, 0) for sid in path),
         "route": stops,
     }
 
@@ -355,7 +417,7 @@ def check():
         print("Queue ends:", q["queue_ends"] or "(empty or paused)")
         a = get_assets(max_rows=5)
         print(f"Assets: {a['rows']} rows across {len(a['locations'])}+ locations")
-    print("All good.")
+    print("o7")
 
 
 if __name__ == "__main__":

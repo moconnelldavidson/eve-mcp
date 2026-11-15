@@ -310,6 +310,27 @@ Use the local MCP server to answer questions rather than guessing, unless you're
 The last line is there because the Project follows you to the browser and
 the phone, but the tools don't.
 
+## Where ESI stops
+
+CCP's API doesn't cover everything, and the server tries to say so rather
+than guess. Wormholes are the example that taught me this.
+
+![A chat in which Claude says a wormhole system looks quiet](docs/wormhole.png)
+
+That answer reads well, and the part about kills was wrong. CCP publishes
+no kill or jump figures for wormhole space, and an earlier version of the
+server reported that gap as zero. A similar answer later got me jumped by
+two people in their own home.
+
+`system_info` now gives no activity for a wormhole system. It says the
+figures don't exist and points to [zKillboard](https://zkillboard.com/)
+for recent kills and [anoik.is](https://anoik.is/) for class, statics and
+effects. An assistant with web access can follow those. One without will
+at least tell you it can't see.
+
+That is the rule for anything outside ESI: admit the gap and name one
+place to look, rather than add a tool for it.
+
 ## Security
 
 - **What it can read:** for each character you sign in, their skills and

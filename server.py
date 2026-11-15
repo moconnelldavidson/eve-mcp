@@ -27,8 +27,8 @@ import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from eve_common import (esi_get, esi_get_all, find_id, load_tokens, names,
-                        setting)
+from eve_common import (esi_get, esi_get_all, esi_post, find_id, load_tokens,
+                        names, setting)
 
 mcp = MCPServer(
     "eve",
@@ -137,6 +137,73 @@ def hub_prices(type_id, hub):
         "region_avg_30d": (isk(sum(d["average"] for d in history) / len(history))
                            if history else None),
     }, lowest
+
+
+# How ESI says "this needs skill X at level Y": six pairs of dogma
+# attributes, one holding the skill's type ID and one the level.
+REQUIRED_SKILLS = ((182, 277), (183, 278), (184, 279),
+                   (1285, 1286), (1289, 1287), (1290, 1288))
+SKILL_RANK, PRIMARY, SECONDARY = 275, 180, 181
+TRAINING_ATTRIBUTES = {164: "charisma", 165: "intelligence", 166: "memory",
+                       167: "perception", 168: "willpower"}
+
+_dogma = {}
+
+
+def dogma(type_id):
+    """An item's dogma attributes as {attribute_id: value}."""
+    if type_id not in _dogma:
+        t = esi_get(f"/universe/types/{type_id}/")
+        _dogma[type_id] = {a["attribute_id"]: a["value"]
+                           for a in t.get("dogma_attributes", [])}
+    return _dogma[type_id]
+
+
+def required_skills(type_id, found=None):
+    """Every skill an item needs as {skill_id: level}, in training order."""
+    found = {} if found is None else found
+    attributes = dogma(type_id)
+    for skill_attr, level_attr in REQUIRED_SKILLS:
+        if skill_attr not in attributes:
+            continue
+        skill, level = int(attributes[skill_attr]), int(attributes[level_attr])
+        if found.get(skill, 0) < level:
+            # Skills have prerequisites of their own. Going into them first
+            # leaves the dict in an order the skills can be trained in.
+            required_skills(skill, found)
+            found[skill] = max(found.get(skill, 0), level)
+    return found
+
+
+def sp_for_level(rank, level):
+    return round(250 * rank * 32 ** ((level - 1) / 2)) if level > 0 else 0
+
+
+def duration(minutes):
+    days, rest = divmod(round(minutes), 1440)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h {mins}m" if hours else f"{mins}m"
+
+
+def fit_items(text):
+    """The item names in a single name, a list of names or an EFT fit."""
+    found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("[empty"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            parts = [line[1:-1].split(",")[0]]  # "[Hull, fit name]"
+        else:
+            parts = line.split(",")  # "Module, Charge"
+        for part in parts:
+            part = part.strip().removesuffix("/offline").strip()
+            part = re.sub(r"\s+x\d+$", "", part)  # "Hobgoblin II x5"
+            if part and part.lower() not in (f.lower() for f in found):
+                found.append(part)
+    return found
 
 
 # ---------- your characters ----------
@@ -299,6 +366,68 @@ def get_assets(character_name: str | None = None,
             "truncated": len(top) < len(rows),
             "est_total": isk(sum(value for _, value in rows.values())),
             "locations": locations}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
+    """Whether a character has the skills for a ship, a module, or a whole
+    fit pasted in EFT format (hull, modules, charges and drones all count).
+    Lists each missing skill in training order, prerequisites included,
+    with the level needed, the level held and how long it takes to train.
+    Checks skills only, not whether the fit has the CPU or powergrid."""
+    char_id, who = character(character_name)
+    asked = fit_items(ship_or_fit)
+    if not asked:
+        raise ValueError("Give a ship or module name, or paste a fit.")
+    resolved = esi_post("/universe/ids/", asked[:500]).get("inventory_types", [])
+    if not resolved:
+        raise ValueError("None of those are item names EVE recognises. "
+                         "It needs exact names (capitals don't matter).")
+    recognised = {r["name"].lower() for r in resolved}
+
+    needed, wanted_by = {}, defaultdict(list)
+    for item in resolved:
+        for skill, level in required_skills(item["id"]).items():
+            needed[skill] = max(needed.get(skill, 0), level)
+            wanted_by[skill].append(item["name"])
+
+    sheet = esi_get(f"/characters/{char_id}/skills/", char_id)
+    held = {s["skill_id"]: s for s in sheet["skills"]}
+    attributes = esi_get(f"/characters/{char_id}/attributes/", char_id)
+    skill_names = names(list(needed))
+
+    missing, total_minutes = [], 0
+    for skill, level in needed.items():
+        mine = held.get(skill, {})
+        if mine.get("active_skill_level", 0) >= level:
+            continue
+        entry = {"skill": skill_names[skill], "need": level,
+                 "have": mine.get("active_skill_level", 0)}
+        if mine.get("trained_skill_level", 0) >= level:
+            entry["note"] = "trained, but switched off on an Alpha clone"
+        else:
+            d = dogma(skill)
+            sp = (sp_for_level(d[SKILL_RANK], level)
+                  - mine.get("skillpoints_in_skill", 0))
+            rate = (attributes[TRAINING_ATTRIBUTES[int(d[PRIMARY])]]
+                    + attributes[TRAINING_ATTRIBUTES[int(d[SECONDARY])]] / 2)
+            total_minutes += sp / rate
+            entry["train"] = duration(sp / rate)
+        if len(resolved) > 1:
+            entry["for"] = wanted_by[skill]
+        missing.append(entry)
+
+    result = {
+        "character": who,
+        "can_fly": not missing,
+        "skills_checked": len(needed),
+        "missing": missing,
+        "total_training": duration(total_minutes) if total_minutes else None,
+    }
+    unknown = [name for name in asked if name.lower() not in recognised]
+    if unknown:
+        result["not_recognised"] = unknown
+    return result
 
 
 # ---------- public game data ----------

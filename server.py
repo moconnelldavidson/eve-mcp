@@ -28,7 +28,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from eve_common import (PATCH_NOTES, esi_get, esi_get_all, esi_post, find_id,
-                        load_tokens, names, setting, zkill_system_kills)
+                        killmail, load_tokens, names, setting,
+                        zkill_system_kills)
 
 mcp = MCPServer(
     "eve",
@@ -220,24 +221,90 @@ def is_wormhole(system_id):
     return 31_000_000 <= system_id < 32_000_000
 
 
+def kill_time(kill):
+    return datetime.fromisoformat(kill["killmail_time"].replace("Z", "+00:00"))
+
+
+def player_kills(kills):
+    """A zKillboard page without the NPC kills, newest first."""
+    # Sleepers killing a ratter say nothing about who is hunting.
+    return sorted((k for k in kills if not k.get("zkb", {}).get("npc")),
+                  key=lambda k: k["killmail_id"], reverse=True)
+
+
+def fill_details(kills, now, fetch=killmail, limit=30):
+    """Add the time and attackers to recent kills that arrived without."""
+    # zKillboard sometimes sends whole killmails and sometimes only an ID
+    # and a hash. ESI has the rest. Only the last day needs it, so stop
+    # at the first kill older than that.
+    fetched = 0
+    for kill in player_kills(kills):
+        if "killmail_time" not in kill or "attackers" not in kill:
+            if fetched >= limit:
+                break
+            try:
+                kill.update(fetch(kill["killmail_id"], kill["zkb"]["hash"]))
+            except (httpx.HTTPError, KeyError):
+                break
+            fetched += 1
+        if now - kill_time(kill) > timedelta(hours=24):
+            break
+    return kills
+
+
 def kill_summary(kills, now):
     """Count a week of zKillboard kills by age and by who did the killing.
-    Attackers come back as {corporation_id: kills}, busiest first."""
-    times = sorted((datetime.fromisoformat(k["killmail_time"].replace("Z", "+00:00"))
-                    for k in kills if "killmail_time" in k), reverse=True)
-    attackers = Counter()
-    for k in kills:
+    Attackers come back as [(corporation_id, kills)], busiest first. An
+    hour or day count is "N+" when it is only a floor and None when it
+    isn't known at all."""
+    # zKillboard sends 200 at a time, so a full page means "at least".
+    full_page = len(kills) >= 200
+    kills = player_kills(kills)
+
+    # Newest first, a count is only complete once a kill older than its
+    # window turns up, or the list runs out. If a kill with no time gets
+    # in the way first, the count is a floor ("30+"), or None if nothing
+    # was counted at all. It must never fall back to zero, which would
+    # read as "quiet".
+    hour = day = 0
+    hour_complete = day_complete = False
+    for kill in kills:
+        if "killmail_time" not in kill:
+            break
+        age = now - kill_time(kill)
+        if age > timedelta(hours=24):
+            hour_complete = day_complete = True
+            break
+        day += 1
+        if age <= timedelta(hours=1):
+            hour += 1
+        else:
+            hour_complete = True
+    else:
+        hour_complete = day_complete = True
+
+    def count(n, complete):
+        return n if complete else f"{n}+" if n else None
+
+    attackers, detailed = Counter(), 0
+    for kill in kills:
+        if "attackers" not in kill:
+            continue
+        detailed += 1
         # NPCs have no character, and a corporation counts once per kill
         # however many of its pilots were on it.
-        attackers.update({a["corporation_id"] for a in k.get("attackers", [])
+        attackers.update({a["corporation_id"] for a in kill["attackers"]
                           if "character_id" in a and "corporation_id" in a})
+
+    timed = [k for k in kills if "killmail_time" in k]
     return {
-        "kills_last_hour": sum(1 for t in times if now - t <= timedelta(hours=1)),
-        "kills_last_24h": sum(1 for t in times if now - t <= timedelta(hours=24)),
-        # zKillboard sends 200 at a time, so a full page means "at least".
-        "kills_last_7d": "200+" if len(kills) >= 200 else len(kills),
-        "last_kill": times[0].strftime("%Y-%m-%dT%H:%M:%SZ") if times else None,
-        "attackers": attackers.most_common(3),
+        "kills_last_hour": count(hour, hour_complete),
+        "kills_last_24h": count(day, day_complete),
+        "kills_last_7d": "200+" if full_page else len(kills),
+        "last_kill": (kill_time(timed[0]).strftime("%Y-%m-%dT%H:%M:%SZ")
+                      if timed else None),
+        "attackers": attackers.most_common(3) if detailed or not kills else None,
+        "attackers_from": detailed,
     }
 
 
@@ -321,7 +388,8 @@ def get_wallet(character_name: str | None = None,
 @mcp.tool(annotations=READ_ONLY)
 def get_location(character_name: str | None = None) -> dict:
     """Where a character is right now: system, security, docked station
-    (if any), current ship, and whether they're online."""
+    (if any), current ship, and whether they're online. is_wormhole marks
+    a wormhole system, where system_info has the recent kills."""
     char_id, who = character(character_name)
     loc = esi_get(f"/characters/{char_id}/location/", char_id)
     ship = esi_get(f"/characters/{char_id}/ship/", char_id)
@@ -337,7 +405,7 @@ def get_location(character_name: str | None = None) -> dict:
     else:
         docked = None  # in space
 
-    return {
+    result = {
         "character": who,
         "online": online.get("online", False),
         "last_login": online.get("last_login"),
@@ -346,6 +414,9 @@ def get_location(character_name: str | None = None) -> dict:
         "docked_at": docked,
         "ship": f"{ship['ship_name']} ({lookup[ship['ship_type_id']]})",
     }
+    if is_wormhole(loc["solar_system_id"]):
+        result["is_wormhole"] = True
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -409,7 +480,10 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
     fit pasted in EFT format (hull, modules, charges and drones all count).
     Lists each missing skill in training order, prerequisites included,
     with the level needed, the level held and how long it takes to train.
-    Checks skills only, not whether the fit has the CPU or powergrid."""
+    Times assume an Omega clone. An Alpha trains at half speed, and the
+    times are doubled when the character is visibly Alpha, but an Alpha
+    can't always be told apart. Checks skills only, not whether the fit
+    has the CPU or powergrid."""
     char_id, who = character(character_name)
     asked = fit_items(ship_or_fit)
     if not asked:
@@ -428,6 +502,10 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
 
     sheet = esi_get(f"/characters/{char_id}/skills/", char_id)
     held = {s["skill_id"]: s for s in sheet["skills"]}
+    # ESI has no "is Omega" field. A skill trained higher than it is
+    # active proves an Alpha. The lack of one proves nothing.
+    alpha = any(s["active_skill_level"] < s["trained_skill_level"]
+                for s in sheet["skills"])
     attributes = esi_get(f"/characters/{char_id}/attributes/", char_id)
     skill_names = names(list(needed))
 
@@ -446,6 +524,8 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
                   - mine.get("skillpoints_in_skill", 0))
             rate = (attributes[TRAINING_ATTRIBUTES[int(d[PRIMARY])]]
                     + attributes[TRAINING_ATTRIBUTES[int(d[SECONDARY])]] / 2)
+            if alpha:
+                rate /= 2
             total_minutes += sp / rate
             entry["train"] = duration(sp / rate)
         if len(resolved) > 1:
@@ -459,6 +539,9 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
         "missing": missing,
         "total_training": duration(total_minutes) if total_minutes else None,
     }
+    if missing:
+        result["training_speed"] = ("Alpha, half speed" if alpha
+                                    else "Omega assumed")
     unknown = [name for name in asked if name.lower() not in recognised]
     if unknown:
         result["not_recognised"] = unknown
@@ -512,9 +595,10 @@ def system_info(system_name: str) -> dict:
     """A solar system's security, constellation, region, number of
     stations, and activity in the last hour (jumps, kills). CCP publishes
     no activity for wormhole systems. For those it gives the wormhole
-    class and zKillboard's recorded kills instead: last hour, day and
-    week, and the corporations doing the killing, who are often the
-    residents."""
+    class and zKillboard's player kills instead: last hour, day and week,
+    and the corporations behind the most recent ones, who are often the
+    residents. There, a count like "30+" means at least that many, and a
+    null count means unknown, not zero."""
     system_id, proper = find_id(system_name, "systems")
     s = system(system_id)
     constellation = esi_get(f"/universe/constellations/{s['constellation_id']}/")
@@ -533,9 +617,10 @@ def system_info(system_name: str) -> dict:
     if is_wormhole(system_id):
         result["class"] = WORMHOLE_CLASSES.get(region["name"][:1])
         result["last_hour"] = None
+        now = datetime.now(timezone.utc)
         try:
-            summary = kill_summary(zkill_system_kills(system_id),
-                                   datetime.now(timezone.utc))
+            summary = kill_summary(
+                fill_details(zkill_system_kills(system_id), now), now)
         except (httpx.HTTPError, ValueError):
             result["note"] = (
                 "CCP publishes no jump or kill figures for wormhole space "
@@ -543,15 +628,22 @@ def system_info(system_name: str) -> dict:
                 f"Recent kills: https://zkillboard.com/system/{system_id}/ . "
                 "Statics and effects: anoik.is.")
             return result
-        corporations = names([corp for corp, _ in summary["attackers"]])
-        summary["attackers_last_7d"] = [
-            {"corporation": corporations[corp], "kills": count}
-            for corp, count in summary.pop("attackers")]
+        ranked = summary.pop("attackers")
+        counted = summary.pop("attackers_from")
+        if ranked is not None:
+            corporations = names([corp for corp, _ in ranked])
+            summary["recent_attackers"] = [
+                {"corporation": corporations[corp], "kills": count}
+                for corp, count in ranked]
+            summary["recent_attackers_from_kills"] = counted
+        else:
+            summary["recent_attackers"] = None
         result["zkillboard"] = summary
         result["note"] = (
-            "CCP publishes no figures for wormhole space. These are kills "
-            "recorded by zKillboard. No kills doesn't mean nobody is home. "
-            "Statics and effects: anoik.is.")
+            "CCP publishes no figures for wormhole space. These are player "
+            "kills recorded by zKillboard. \"N+\" means at least N, null "
+            "means unknown, not zero, and no kills doesn't mean nobody is "
+            "home. Statics and effects: anoik.is.")
         return result
     kills = next((k for k in esi_get("/universe/system_kills/")
                   if k["system_id"] == system_id), {})
@@ -576,7 +668,20 @@ def route(origin: str, destination: str, preference: str = "shortest") -> dict:
         raise ValueError('preference must be "shortest", "secure" or "insecure"')
     origin_id, origin_name = find_id(origin, "systems")
     dest_id, dest_name = find_id(destination, "systems")
-    path = esi_get(f"/route/{origin_id}/{dest_id}/", params={"flag": preference})
+    for system_id, name in ((origin_id, origin_name), (dest_id, dest_name)):
+        if is_wormhole(system_id):
+            raise ValueError(
+                f"{name} is a wormhole system and gates don't go there. "
+                "The way in or out is a wormhole, which no route can plan. "
+                "system_info has what is known about the system.")
+    try:
+        path = esi_get(f"/route/{origin_id}/{dest_id}/",
+                       params={"flag": preference})
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            raise
+        raise ValueError(f"There is no {preference} gate route from "
+                         f"{origin_name} to {dest_name}.") from None
     system_names = names(path)
     kills = {k["system_id"]: k["ship_kills"]
              for k in esi_get("/universe/system_kills/")}

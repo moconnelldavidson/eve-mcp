@@ -325,11 +325,12 @@ server reported that gap as zero. A similar answer later got me jumped by
 two people in their own home.
 
 For a wormhole system, `system_info` now asks
-[zKillboard](https://zkillboard.com/) instead. It gives the kills recorded
-there in the last hour, day and week, and the corporations doing the
-killing, who are often the people who live there. It also gives the
-wormhole's class. No recorded kills still doesn't mean nobody is home, and
-the tool says so.
+[zKillboard](https://zkillboard.com/) instead. It gives the player kills
+recorded there in the last hour, day and week, and the corporations behind
+the most recent ones, who are often the people who live there. It also
+gives the wormhole's class. When a count can't be worked out it comes back
+as unknown, never as zero. No recorded kills still doesn't mean nobody is
+home, and the tool says so.
 
 Statics and effects aren't in either source, so for those it names
 [anoik.is](https://anoik.is/) and leaves it to you. That site turns away

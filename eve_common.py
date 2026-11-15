@@ -165,6 +165,14 @@ def access_token(char_id):
 
 # ---------- ESI ----------
 
+def _seconds(header, default):
+    # Capped at a minute, so a strange header can't hang a tool call.
+    try:
+        return max(0, min(int(float(header)), 60))
+    except (TypeError, ValueError):
+        return default
+
+
 def _get(path, char_id=None, params=None):
     headers = {}
     if char_id:
@@ -172,10 +180,19 @@ def _get(path, char_id=None, params=None):
     params = {"datasource": "tranquility", **(params or {})}
     for attempt in range(3):
         r = http.get(f"{ESI}{path}", headers=headers, params=params)
-        # ESI blocks you for a while if you rack up errors; ease off early.
+        # ESI blocks you for a while if you rack up errors, so ease off
+        # early. Only after an error: a success costs nothing.
         remain = r.headers.get("X-ESI-Error-Limit-Remain")
-        if remain is not None and int(remain) < 10:
-            time.sleep(int(r.headers.get("X-ESI-Error-Limit-Reset", 60)))
+        if r.status_code >= 400 and remain is not None and int(remain) < 10:
+            time.sleep(_seconds(r.headers.get("X-ESI-Error-Limit-Reset"), 60))
+        if r.status_code == 429:
+            wait = _seconds(r.headers.get("Retry-After"), 5)
+            if attempt < 2:
+                time.sleep(wait)
+                continue
+            raise RuntimeError(
+                "EVE's API says this is too many requests. "
+                f"Try again in about {wait} seconds.")
         if r.status_code in (502, 503, 504):
             if attempt < 2:
                 time.sleep(3 * (attempt + 1))
@@ -223,6 +240,18 @@ def zkill_system_kills(system_id):
                  f"solarSystemID/{system_id}/pastSeconds/604800/")
     r.raise_for_status()
     return r.json()
+
+
+_killmails = {}
+
+
+def killmail(killmail_id, killmail_hash):
+    """One full killmail from ESI. Public, and kept for the life of the
+    process because a killmail never changes."""
+    if killmail_id not in _killmails:
+        _killmails[killmail_id] = esi_get(
+            f"/killmails/{killmail_id}/{killmail_hash}/")
+    return _killmails[killmail_id]
 
 
 # ---------- names ----------

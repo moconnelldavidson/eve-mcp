@@ -27,8 +27,8 @@ import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from eve_common import (esi_get, esi_get_all, esi_post, find_id, load_tokens,
-                        names, setting)
+from eve_common import (PATCH_NOTES, esi_get, esi_get_all, esi_post, find_id,
+                        load_tokens, names, setting)
 
 mcp = MCPServer(
     "eve",
@@ -40,7 +40,10 @@ mcp = MCPServer(
         "Use these tools for anything about the current state of the game or "
         "the user's characters, rather than answering from memory. "
         "Reply in ordinary conversational prose and mention only the findings "
-        "that matter. Don't announce tool calls or recite raw fields."
+        "that matter. Don't announce tool calls or recite raw fields. "
+        "The game changes after your training data ends. If something looks "
+        "unfamiliar or recently changed and you can browse, the patch notes "
+        f"are an optional reference: {PATCH_NOTES}"
     ),
 )
 

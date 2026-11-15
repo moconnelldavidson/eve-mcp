@@ -27,6 +27,10 @@ ESI = "https://esi.evetech.net/latest"
 SSO_AUTHORIZE = "https://login.eveonline.com/v2/oauth/authorize/"
 SSO_TOKEN = "https://login.eveonline.com/v2/oauth/token"
 
+# A model's knowledge of EVE stops at its training date and the game
+# doesn't. This is where to send it for anything newer.
+PATCH_NOTES = "https://www.eveonline.com/news/t/patch-notes"
+
 # Each one must also be ticked on your app at developers.eveonline.com,
 # or the login page will refuse.
 SCOPES = [
@@ -242,5 +246,6 @@ def find_id(name, category):
     found = esi_post("/universe/ids/", [name]).get(category, [])
     if not found:
         raise ValueError(f"No {category.replace('_', ' ')} called '{name}'. "
-                         "EVE needs the exact name (capitals don't matter).")
+                         "EVE needs the exact name (capitals don't matter). "
+                         f"If it is new to the game, see {PATCH_NOTES}")
     return found[0]["id"], found[0]["name"]

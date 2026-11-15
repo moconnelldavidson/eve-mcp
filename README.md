@@ -287,8 +287,10 @@ The more useful ones make an assistant combine several:
 - With your own notes in a Project: "Check my training plan against my
   live skill queue and correct any dates that have drifted."
 
-Item and system names have to be spelled exactly as in the game (capitals
-don't matter). With several characters signed in, name the one you mean.
+The server only looks names up exactly as the game spells them. Claude
+usually corrects spelling and abbreviations itself before it asks, so
+"VNI" tends to work. For anything unusual or new, the game's exact name is
+the safe bet. With several characters signed in, name the one you mean.
 Otherwise the default character is used.
 
 ## Use it in a Project

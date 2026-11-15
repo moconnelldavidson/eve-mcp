@@ -1,0 +1,4 @@
+# Tested with mcp 2.3.0, httpx 0.28.1, Python 3.13.
+# requirements.lock has the exact versions of everything from that test.
+mcp>=2.3,<3
+httpx>=0.27

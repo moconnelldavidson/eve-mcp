@@ -1,0 +1,11 @@
+# Secrets: your EVE app's ID/secret and your sign-in tokens
+.env
+tokens.json
+tokens.tmp
+tokens.lock
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

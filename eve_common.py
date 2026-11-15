@@ -1,8 +1,4 @@
-"""Shared plumbing for eve-mcp: settings, sign-in tokens and ESI requests.
-
-server.py (the MCP server) and auth.py (the one-off login) both import this.
-Nothing in here knows about MCP; it's just "talk to EVE's API".
-"""
+"""Settings, sign-in tokens and ESI requests, shared by server.py and auth.py."""
 
 import base64
 import json
@@ -16,8 +12,8 @@ from pathlib import Path
 import httpx
 
 try:
-    import fcntl  # Linux/Mac only
-except ImportError:  # Windows: no cross-process lock, same as before
+    import fcntl
+except ImportError:  # Windows has no fcntl, so no lock between programs there
     fcntl = None
 
 # httpx logs every request; that's noise in Claude's MCP logs.
@@ -31,8 +27,8 @@ ESI = "https://esi.evetech.net/latest"
 SSO_AUTHORIZE = "https://login.eveonline.com/v2/oauth/authorize/"
 SSO_TOKEN = "https://login.eveonline.com/v2/oauth/token"
 
-# What we ask permission for. Each one must also be ticked on your app at
-# developers.eveonline.com, or the login page will refuse.
+# Each one must also be ticked on your app at developers.eveonline.com,
+# or the login page will refuse.
 SCOPES = [
     "esi-skills.read_skills.v1",
     "esi-skills.read_skillqueue.v1",
@@ -47,11 +43,11 @@ SCOPES = [
 # ---------- settings (.env) ----------
 
 def load_env():
-    """Read KEY=VALUE lines from .env. A tiny parser so we need no extra
-    package. 'utf-8-sig' copes with the invisible marker Notepad can add
-    to the start of a file."""
+    """Read KEY=VALUE lines from .env."""
     values = {}
     if ENV_PATH.exists():
+        # utf-8-sig, because Notepad can put an invisible marker at the
+        # start of the file that would end up in the first key.
         for line in ENV_PATH.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -86,8 +82,7 @@ http = httpx.Client(
 
 
 def token_request(data):
-    """Ask EVE's login server for tokens. Used both for the first login
-    (grant_type=authorization_code) and for renewals (refresh_token)."""
+    """Ask EVE's login server for tokens, at first login or on renewal."""
     raw = f"{require('EVE_CLIENT_ID')}:{require('EVE_CLIENT_SECRET')}".encode()
     r = http.post(
         SSO_TOKEN,
@@ -99,8 +94,8 @@ def token_request(data):
 
 
 def decode_jwt(token):
-    """Read the middle part of EVE's access token, which says who it's for.
-    We just got it from EVE over HTTPS, so we don't check its signature."""
+    """The claims inside EVE's access token, which say who it's for."""
+    # No signature check: the token has just come from EVE over HTTPS.
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
     return json.loads(base64.urlsafe_b64decode(payload))
@@ -118,9 +113,9 @@ def load_tokens():
 
 
 def save_tokens(tokens):
-    # Write to a temp file then swap, so a crash can't leave half a file.
-    # The temp file is created readable by the owner only (mode 600), so
-    # the swap never loosens tokens.json. Windows ignores the mode.
+    # Temp file then swap, so a crash can't leave half a file. The temp
+    # file is created owner-only (mode 600), or the swap would loosen
+    # tokens.json on every refresh. Windows ignores the mode.
     tmp = TOKENS_PATH.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -131,10 +126,9 @@ def save_tokens(tokens):
 
 @contextmanager
 def _file_lock():
-    """Stop two separate programs (say, two Claude sessions each running
-    this server) from refreshing the token at the same moment. EVE may rotate the refresh
-    token on each use, so the loser would save a dead one. flock waits
-    until the other program is done, and lets go if we crash."""
+    # Two copies of this server (one per Claude session) must not refresh
+    # at the same moment. EVE may rotate the refresh token on each use, so
+    # the loser would save a dead one. flock lets go if we crash.
     if fcntl is None:
         yield
         return
@@ -147,9 +141,7 @@ def _file_lock():
 
 
 def access_token(char_id):
-    """A working access token for this character. They last 20 minutes;
-    when one is close to expiring we swap the refresh token for a new pair.
-    EVE may hand back a new refresh token too, so we always save it."""
+    """A working access token for this character, refreshed if needed."""
     with _lock, _file_lock():
         # Read inside the lock: if another program just refreshed, we
         # see its fresh token and don't refresh again.
@@ -198,8 +190,7 @@ def esi_get(path, char_id=None, params=None):
 
 
 def esi_get_all(path, char_id=None, params=None):
-    """GET an endpoint that comes in pages (assets, market orders) and
-    join the pages into one list. ESI says how many in X-Pages."""
+    """GET an endpoint that comes in pages and join them into one list."""
     first = _get(path, char_id, params)
     items = first.json()
     pages = int(first.headers.get("X-Pages", 1))
@@ -220,9 +211,10 @@ _names = {}  # id -> name, kept for as long as the server runs
 
 
 def names(ids):
-    """Turn IDs (skills, items, systems, stations...) into names.
-    Player structures and individual items can't be looked up this way,
-    so we leave out anything with a huge ID and skip failures."""
+    """Turn IDs (skills, items, systems, stations) into names. Anything
+    that can't be looked up comes back as "#<id>"."""
+    # Player structures and individual items have huge IDs and no public
+    # name, and one of them would fail the whole batch.
     wanted = {i for i in ids if i not in _names and i < 10_000_000_000}
     wanted = list(wanted)
     for start in range(0, len(wanted), 1000):  # ESI takes 1000 at a time
@@ -241,8 +233,7 @@ def names(ids):
 
 
 def find_id(name, category):
-    """Exact name -> ID, e.g. find_id("Jita", "systems").
-    Categories: inventory_types, systems, regions, stations, characters..."""
+    """Exact name to (ID, proper name), e.g. find_id("Jita", "systems")."""
     found = esi_post("/universe/ids/", [name]).get(category, [])
     if not found:
         raise ValueError(f"No {category.replace('_', ' ')} called '{name}'. "

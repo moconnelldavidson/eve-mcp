@@ -1,15 +1,14 @@
 """eve-mcp: a small MCP server for EVE Online.
 
-How an MCP server works, in short: Claude starts this script and talks to
-it over stdin/stdout. When it starts, the script tells Claude which tools
-it has. Each tool is a plain Python function below: the @mcp.tool()
-decorator registers it, the name becomes the tool's name, the type hints
-become its inputs, and the docstring is what Claude reads to decide when
-to use it. Whatever the function returns goes back to Claude as the result.
+Claude starts this script and talks to it over stdin/stdout. Each tool is
+a plain function with the @mcp.tool decorator on it. The function name is
+the tool's name, the type hints are its inputs, and the docstring is what
+Claude reads to decide when to use it. So the tool docstrings are part of
+the interface. Edit them with the same care as the code.
 
-Because stdout carries the conversation with Claude, never print() here;
-it would garble the messages. Errors are fine: raise an exception and
-Claude sees the message.
+Never print() here. Stdout carries the conversation with Claude and a
+stray line garbles it. To report a problem, raise an exception and Claude
+sees the message.
 
     python server.py           run as an MCP server (Claude does this)
     python server.py --check   quick test in the terminal
@@ -345,8 +344,8 @@ def route(origin: str, destination: str, preference: str = "shortest") -> dict:
 # ---------- run ----------
 
 def check():
-    """Try a few tools in the terminal, so problems show up here rather
-    than as a mystery inside Claude."""
+    """Try a few tools in the terminal, where a failure is easier to read
+    than it is inside Claude."""
     print("Signed in:", list_characters() or "nobody yet (run auth.py)")
     print("Jita:", system_info("Jita")["security"], "security")
     if load_tokens():
@@ -363,4 +362,4 @@ if __name__ == "__main__":
     if "--check" in sys.argv:
         check()
     else:
-        mcp.run()  # stdio: Claude talks to us over stdin/stdout
+        mcp.run()

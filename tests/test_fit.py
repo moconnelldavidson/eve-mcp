@@ -257,6 +257,38 @@ Mjolnir Light Missile x750"""
     assert r["verdict"].startswith("too close to call: CPU")
 
 
+def test_matches_the_game_for_cpu_rigs():
+    # Copied from the in-game fitting window, for Mining Upgrades I: 22.1 tf
+    # CPU left of 458.8, and 36.0 MW powergrid left of 62.5. Two Processor
+    # Overclocking Units each add 7.1% to the CPU output with no stacking
+    # penalty: 320 x 1.25 x 1.071 x 1.071 = 458.82.
+    pioneer = """[Pioneer, Schrodinger]
+Mining Laser Upgrade I
+Mining Laser Upgrade I
+
+Small F-S9 Regolith Compact Shield Extender
+Multispectrum Shield Hardener I
+1MN Y-S8 Compact Afterburner
+
+Miner II
+Miner II
+Miner II
+Salvager I
+
+Small Core Defense Field Extender I
+Small Processor Overclocking Unit I
+Small Processor Overclocking Unit I
+
+
+
+Hobgoblin II x2"""
+    r = run(pioneer, mining_upgrades=1)
+    assert r["cpu"] == "CPU 436.77 / 458.82 tf"          # 22.1 left
+    assert r["powergrid"] == "Powergrid 26.5 / 62.5 MW"  # 36.0 left
+    assert r["calibration"] == "Calibration 350 / 400"
+    assert r["verdict"].startswith("too close to call: CPU")
+
+
 def test_a_higher_skill_level_shrinks_the_penalty_more():
     # Mining Upgrades V: 7.5% each, 240 x 1.075^2 = 277.35, plus 129.
     r = run(TOYO, mining_upgrades=5)

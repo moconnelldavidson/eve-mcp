@@ -38,7 +38,7 @@ ITEMS = [
     "Cap Recharger II", "Arbalest Compact Light Missile Launcher",
     "Small Kinetic Shield Reinforcer I", "Scourge Light Missile",
     "Inferno Light Missile", "Mjolnir Light Missile",
-    "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
+    "Salvager I", "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
     "Strip Miner I", "Medium EM Shield Reinforcer I", "Hornet I",
 ]
 SKILLS = [

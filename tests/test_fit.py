@@ -1,4 +1,5 @@
-"""Offline tests for the fit parser and the training-time sums.
+"""Offline tests for the fit parser, the fitting check and the training-time
+sums.
 
 Run from the project folder with the project's Python:
 
@@ -6,12 +7,17 @@ Run from the project folder with the project's Python:
     .venv\\Scripts\\python tests\\test_fit.py     (Windows)
 """
 
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import duration, fit_items, sp_for_level  # noqa: E402
+import fitdata  # noqa: E402
+from fitdata import GameData  # noqa: E402
+from fitting import Dogma, check_fit, eft_fit  # noqa: E402
+from server import active_levels, duration, fit_items, sp_for_level  # noqa: E402
 
 FIT = """[Tristan, Belt ratter]
 Drone Damage Amplifier II
@@ -65,6 +71,614 @@ def test_duration_reads_like_the_skill_queue():
     assert duration(312) == "5h 12m"
     assert duration(1440 * 3 + 250) == "3d 4h"
     assert duration(0) == "0m"
+
+
+# ---------- does it fit? ----------
+# These run on game data recorded from EVE Ref (tests/fixtures/dogma.json,
+# made by tests/record_fixtures.py), so the engine is tested on real
+# effects and no network is used. Expected figures are worked out by hand
+# in the comments.
+
+REC = json.loads((Path(__file__).parent / "fixtures" / "dogma.json").read_text())
+IDS = REC["ids"]
+
+
+class Recorded:
+    """Stands in for fitdata.GameData, answering from the recorded file."""
+
+    def type(self, type_id):
+        t = REC["types"][str(type_id)]
+        return {**t, "attrs": {k: v for k, v in t["attrs"]}}
+
+    def effect(self, effect_id):
+        return REC["dogma_effects"][str(effect_id)]
+
+    def attribute(self, attribute_id):
+        return REC["dogma_attributes"][str(attribute_id)]
+
+    def preload(self, type_ids):
+        pass
+
+    def freshness(self):
+        return ""
+
+
+MAXED = ["CPU Management", "Power Grid Management", "Mining Upgrades",
+         "Shield Upgrades", "Weapon Upgrades", "Advanced Weapon Upgrades",
+         "Mining", "Gunnery", "Missile Launcher Operation",
+         "Mining Destroyer", "Covert Ops", "Caldari Frigate", "Cloaking",
+         "Energy Grid Upgrades"]
+
+
+def run(eft, **levels):
+    """Check a fit with every recorded skill at V, except those named
+    (underscores for spaces, as in mining_upgrades=1)."""
+    skills = {IDS[name.lower()]: 5 for name in MAXED}
+    for name, level in levels.items():
+        skills[IDS[name.replace("_", " ").lower()]] = level
+    return check_fit(eft_fit(eft), IDS, skills, Recorded())
+
+
+TOYO = """[Pioneer, Toyo Highsec Miner]
+Mining Laser Upgrade I
+Mining Laser Upgrade I
+
+Small F-S9 Regolith Compact Shield Extender
+Multispectrum Shield Hardener I
+1MN Y-S8 Compact Afterburner
+
+Miner II
+Miner II
+Miner II
+[Empty High slot]
+
+Small Core Defense Field Extender I
+Small Core Defense Field Extender I
+Small Core Defense Field Extender I
+
+Hobgoblin II x2
+"""
+EMPTY = "[Empty Low slot]\n\n[Empty Med slot]\n\n[Empty High slot]\n\n[Empty Rig slot]"
+
+
+def test_the_real_fit_is_over_on_cpu():
+    # An upgrade is a CPU penalty on miners, and Mining Upgrades I shrinks it
+    # to 9.5%. Three Miner IIs: 3 x 80 x 1.095 x 1.095 = 287.77, plus the
+    # upgrades' own 60 and 16 + 40 + 13. Powergrid: the extender's 2 MW
+    # is cut by Shield Upgrades V to 1.5, and 2 + 1 + 9 + 12.
+    r = run(TOYO, mining_upgrades=1)
+    assert r["verdict"] == "does not fit: CPU is 16.77 tf over"
+    assert r["cpu"] == "CPU 416.77 / 400 tf"
+    assert r["powergrid"] == "Powergrid 25.5 / 62.5 MW"
+    assert r["calibration"] == "Calibration 150 / 400"
+    assert r["slots"] == "High 3 / 4, Mid 3 / 3, Low 2 / 2, Rig 3 / 3"
+    assert r["hardpoints"] == "Turrets 3 / 3, Launchers 0 / 0"
+    assert r["drone_bay"] == "Drone bay 10 / 40 m3"
+    assert r["drone_bandwidth"] == "Drone bandwidth 10 / 20 Mbit/s"
+    assert "unreadable" not in r["not_modelled"]
+
+
+def test_matches_the_game_for_a_procurer():
+    # Copied from the in-game fitting window for a character with Mining
+    # Upgrades I: 53.6 of 387.5 tf CPU and 86.5 of 112.5 MW left.
+    procurer = """[Procurer, Toyo Rocks]
+Mining Laser Upgrade I
+Mining Laser Upgrade I
+Damage Control II
+
+Mining Survey Chipset II
+Multispectrum Shield Hardener II
+Multispectrum Shield Hardener II
+
+Strip Miner I
+Strip Miner I
+
+Medium EM Shield Reinforcer I
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+
+
+
+Hornet I x5"""
+    r = run(procurer, mining_upgrades=1)
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 333.88 / 387.5 tf"     # 387.5 - 53.6 = 333.9
+    assert r["powergrid"] == "Powergrid 26 / 112.5 MW"  # 112.5 - 86.5
+
+
+def test_matches_the_game_for_a_covert_ops_buzzard():
+    # Copied from the in-game fitting window: 174 of 375 tf CPU and
+    # 12.8 of 33.8 MW powergrid left, for Covert Ops IV: the hull takes 80%
+    # off the cloak's 100 tf, so it costs 20 (it would be free at V). Several
+    # modules cost no CPU or power at all.
+    buzzard = """[Buzzard, Starlet]
+Micro Auxiliary Power Core II
+Nanofiber Internal Structure II
+Inertial Stabilizers II
+
+5MN Y-T8 Compact Microwarpdrive
+Relic Analyzer II
+Data Analyzer II
+Cargo Scanner I
+Scan Rangefinding Array I
+
+Covert Ops Cloaking Device II
+Core Probe Launcher II
+Interdiction Nullifier I
+
+Small Polycarbon Engine Housing I
+Small Gravity Capacitor Upgrade II
+
+
+
+
+Sisters Core Scanner Probe x8
+Scan Rangefinding Array I x1
+Expanded Probe Launcher I x1"""
+    r = run(buzzard, covert_ops=4, cloaking=4)
+    assert run(buzzard)["cpu"] == "CPU 181 / 375 tf"  # Covert Ops V
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 201 / 375 tf"                 # 375 - 174
+    assert r["powergrid"] == "Powergrid 21 / 33.75 MW"    # 33.8 - 12.8
+
+
+HAWK = """[Hawk, MissileHawk]
+Ballistic Control System II
+Damage Control I
+
+1MN Afterburner II
+Small Shield Booster II
+Small Shield Extender II
+Multispectrum Shield Hardener II
+Cap Recharger II
+
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+
+Small Core Defense Field Extender I
+Small Kinetic Shield Reinforcer I
+
+
+
+
+Scourge Light Missile x1660
+Inferno Light Missile x750
+Mjolnir Light Missile x750"""
+
+
+def test_matches_the_game_for_a_missile_hawk():
+    # Copied from the in-game fitting window, for Advanced Weapon Upgrades
+    # III: 2.3 tf CPU and 13.4 MW powergrid left, of 237.5 and 56.25. Weapon
+    # Upgrades V cuts each launcher's 16 tf to 12, Energy Grid Upgrades V
+    # the Cap Recharger's 15 tf to 11.25, and Advanced Weapon Upgrades III
+    # takes 6% off the launchers' powergrid.
+    r = run(HAWK, advanced_weapon_upgrades=3)
+    assert r["cpu"] == "CPU 235.25 / 237.5 tf"          # 2.25 left
+    assert r["powergrid"] == "Powergrid 42.81 / 56.25 MW"  # 13.44 left
+    assert r["hardpoints"] == "Turrets 0 / 2, Launchers 4 / 4"
+    # It fits, with under 1% to spare, which is why the verdict hedges.
+    assert r["verdict"].startswith("too close to call: CPU")
+
+
+def test_matches_the_game_for_cpu_rigs():
+    # Copied from the in-game fitting window, for Mining Upgrades I: 22.1 tf
+    # CPU left of 458.8, and 36.0 MW powergrid left of 62.5. Two Processor
+    # Overclocking Units each add 7.1% to the CPU output with no stacking
+    # penalty: 320 x 1.25 x 1.071 x 1.071 = 458.82.
+    pioneer = """[Pioneer, Schrodinger]
+Mining Laser Upgrade I
+Mining Laser Upgrade I
+
+Small F-S9 Regolith Compact Shield Extender
+Multispectrum Shield Hardener I
+1MN Y-S8 Compact Afterburner
+
+Miner II
+Miner II
+Miner II
+Salvager I
+
+Small Core Defense Field Extender I
+Small Processor Overclocking Unit I
+Small Processor Overclocking Unit I
+
+
+
+Hobgoblin II x2"""
+    r = run(pioneer, mining_upgrades=1)
+    assert r["cpu"] == "CPU 436.77 / 458.82 tf"          # 22.1 left
+    assert r["powergrid"] == "Powergrid 26.5 / 62.5 MW"  # 36.0 left
+    assert r["calibration"] == "Calibration 350 / 400"
+    assert r["verdict"].startswith("too close to call: CPU")
+
+
+def test_with_no_fitting_skills_nothing_is_cut_or_added():
+    # These figures come from the item data by hand, not from the engine.
+    # Pioneer: each upgrade adds the full 10% to miner CPU, so
+    # 3 x 80 x 1.1 x 1.1 = 290.4, plus 60 + 16 + 40 + 13. Powergrid is
+    # 2 + 2 + 1 + 9 + 12, with the extender's 2 MW uncut. The output is
+    # the hull's own 320 tf and 50 MW.
+    zero = {name.replace(" ", "_"): 0 for name in MAXED}
+    r = run(TOYO, **zero)
+    assert r["cpu"] == "CPU 419.4 / 320 tf"
+    assert r["powergrid"] == "Powergrid 26 / 50 MW"
+    assert r["verdict"] == "does not fit: CPU is 99.4 tf over"
+
+
+def test_a_skill_the_character_lacks_is_the_same_as_level_zero():
+    zero = {name.replace(" ", "_"): 0 for name in MAXED}
+    skills = {IDS[name.lower()]: 0 for name in MAXED}
+    absent = check_fit(eft_fit(TOYO), IDS, {}, Recorded())
+    assert absent == check_fit(eft_fit(TOYO), IDS, skills, Recorded())
+    assert absent["cpu"] == run(TOYO, **zero)["cpu"]
+
+
+def test_the_cloak_costs_its_full_cpu_without_covert_ops():
+    cloak = ("[Buzzard, t]\n[Empty Low slot]\n\n[Empty Med slot]\n\n"
+             "Covert Ops Cloaking Device II")
+    assert run(cloak, covert_ops=0)["cpu"].startswith("CPU 100 /")
+
+
+def test_one_skill_level_turns_a_pass_into_a_fail():
+    # The Hawk's four launchers need 16 tf each less 5% per level of
+    # Weapon Upgrades: at V they cost 48 in all, at IV 51.2, which is 3.2
+    # more. That takes the fit from 235.25 to 238.45 of 237.5.
+    r = run(HAWK, advanced_weapon_upgrades=3, weapon_upgrades=4)
+    assert r["cpu"] == "CPU 238.45 / 237.5 tf"
+    assert r["verdict"] == "does not fit: CPU is 0.95 tf over"
+
+
+def test_only_the_active_skill_level_counts_on_an_alpha_clone():
+    sheet = {"skills": [
+        {"skill_id": 1, "trained_skill_level": 5, "active_skill_level": 3},
+        {"skill_id": 2, "trained_skill_level": 4, "active_skill_level": 4}]}
+    assert active_levels(sheet) == {1: 3, 2: 4}
+
+
+def test_matches_the_game_for_a_stratios_the_character_cannot_fly():
+    # Copied from the in-game fitting window: 161.5 tf CPU left of 500, and
+    # powergrid 7.7 MW over its 1,150. The check doesn't care that the pilot
+    # lacks the skills to fly the ship. The drone bay holds exactly 400 m3
+    # of drones (bandwidth only limits how many launch), and the scripts,
+    # paste and probes in the cargo count for nothing.
+    stratios = """[Stratios, Brother Grimoire's Exploration Stratios]
+Damage Control II
+Imperial Navy 1600mm Steel Plates
+Centum C-Type Medium Armor Repairer
+Centii A-Type Multispectrum Coating
+Centii A-Type Multispectrum Coating
+
+Thukker Large Cap Battery
+Cargo Scanner II
+50MN Y-T8 Compact Microwarpdrive
+Omnidirectional Tracking Link II
+Zeugma Integrated Analyzer
+
+[Empty High slot]
+Covert Ops Cloaking Device II
+Sisters Core Probe Launcher
+
+Medium Explosive Armor Reinforcer I
+Medium Auxiliary Nano Pump II
+Medium Auxiliary Nano Pump II
+
+
+
+Hammerhead II x5
+Ogre II x3
+Warrior II x15
+Vespa EC-600 x5
+Hornet EC-300 x5
+Imperial Navy Curator x4
+'Integrated' Ogre x1
+
+Sisters Core Scanner Probe x16
+Tracking Speed Script x1
+Nanite Repair Paste x307
+Optimal Range Script x1"""
+    r = run(stratios)
+    assert r["verdict"] == "does not fit: Powergrid is 7.72 MW over"
+    assert r["cpu"] == "CPU 338.5 / 500 tf"                # 500 - 161.5
+    assert r["powergrid"] == "Powergrid 1,157.72 / 1,150 MW"
+    assert r["calibration"] == "Calibration 350 / 350"
+    assert r["drone_bay"] == "Drone bay 400 / 400 m3"
+    assert "not_found" not in r
+
+
+def test_a_higher_skill_level_shrinks_the_penalty_more():
+    # Mining Upgrades V: 7.5% each, 240 x 1.075^2 = 277.35, plus 129.
+    r = run(TOYO, mining_upgrades=5)
+    assert r["cpu"] == "CPU 406.35 / 400 tf"
+    assert r["verdict"] == "does not fit: CPU is 6.35 tf over"
+
+
+def test_within_five_percent_is_too_close_to_call():
+    # The same without the extender: 277.35 + 60 + 40 + 13 = 390.35 of 400.
+    r = run(TOYO.replace("Small F-S9 Regolith Compact Shield Extender\n", ""))
+    assert r["cpu"] == "CPU 390.35 / 400 tf"
+    assert r["verdict"].startswith("too close to call: CPU")
+    assert "fitting window" in r["verdict"]
+
+
+def test_fit_that_fits():
+    # One upgrade at Mining Upgrades V adds 7.5% to the miner's 80 tf: 86.
+    r = run("[Pioneer, ok]\nMining Laser Upgrade I\n\n1MN Y-S8 Compact "
+            "Afterburner\n\nMiner II\n\nSmall Core Defense Field Extender I")
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 129 / 400 tf"               # 30 + 86 + 13
+    assert r["powergrid"] == "Powergrid 14 / 62.5 MW"   # 1 + 9 + 4
+    assert r["calibration"] == "Calibration 50 / 400"
+
+
+def test_offline_module_costs_nothing_but_keeps_its_slot():
+    # Offline miners add nothing and cost nothing, and the upgrades'
+    # penalty has nothing to act on: 60 + 16 + 40 + 13.
+    r = run(TOYO.replace("Miner II", "Miner II /offline"), mining_upgrades=1)
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 129 / 400 tf"
+    assert r["hardpoints"].startswith("Turrets 3 / 3")
+    assert r["slots"].startswith("High 3 / 4")
+
+
+def test_too_many_turrets():
+    r = run(TOYO.replace("[Empty High slot]", "Miner II"))
+    assert "Turret hardpoints: 4 / 3" in r["verdict"]
+    assert r["verdict"].startswith("does not fit")
+
+
+def test_weapon_upgrades_cut_a_launchers_cpu_and_advanced_its_powergrid():
+    launcher = "[Kestrel, t]\n[Empty Low slot]\n\n[Empty Med slot]\n\nLight Missile Launcher II"
+    # The launcher needs 24 tf and 7 MW. Weapon Upgrades V takes 25% off the
+    # CPU and Advanced Weapon Upgrades V 10% off the powergrid.
+    r = run(launcher)
+    assert r["cpu"].startswith("CPU 18 /")
+    assert r["powergrid"].startswith("Powergrid 6.3 /")
+    r = run(launcher, weapon_upgrades=0, advanced_weapon_upgrades=0)
+    assert r["cpu"].startswith("CPU 24 /")
+    assert r["powergrid"].startswith("Powergrid 7 /")
+
+
+def test_a_covert_ops_hull_makes_the_cloak_fit():
+    # The cloak needs 100 tf. The Buzzard takes 20% off per level of Covert
+    # Ops (the hull's bonus is scaled by the skill), so V makes it free.
+    cloak = ("[Buzzard, t]\n[Empty Low slot]\n\n[Empty Med slot]\n\n"
+             "Covert Ops Cloaking Device II")
+    r = run(cloak)
+    assert r["cpu"].startswith("CPU 0 /")
+    assert r["verdict"] == "fits"
+    assert run(cloak, covert_ops=3)["cpu"].startswith("CPU 40 /")
+
+
+def test_a_cloak_on_the_wrong_hull_is_refused():
+    r = run("[Kestrel, t]\n[Empty Low slot]\n\n[Empty Med slot]\n\n"
+            "Covert Ops Cloaking Device II")
+    assert "Covert Ops Cloaking Device II can't be fitted to a Kestrel" in r["verdict"]
+    assert r["verdict"].startswith("does not fit")
+
+
+def test_two_damage_controls_break_max_group_fitted():
+    r = run("[Pioneer, t]\nDamage Control II\nDamage Control II")
+    assert "Damage Control II: 2 fitted, only 1 allowed" in r["verdict"]
+    assert r["verdict"].count("Damage Control II") == 1  # said once, not per line
+
+
+def test_a_medium_rig_on_a_small_ship_is_refused():
+    r = run(f"[Pioneer, t]\n{EMPTY.rsplit(chr(10), 1)[0]}\nMedium Core Defense Field Extender I")
+    assert "wrong rig size" in r["verdict"]
+
+
+def test_spare_drones_beyond_bandwidth_still_fit():
+    # Five Hobgoblin IIs take 25 Mbit/s of 20, so only four launch, but
+    # they are 25 m3 in a 40 m3 bay. Drones in the cargo count for nothing.
+    r = run(f"[Pioneer, t]\n{EMPTY}\n\nHobgoblin II x5\n\nHobgoblin II x50")
+    assert r["verdict"] == "fits"
+    assert r["drone_bay"] == "Drone bay 25 / 40 m3"
+    assert "not all can be launched" in r["drone_bandwidth"]
+
+
+def test_too_many_drones_for_the_bay():
+    r = run(f"[Pioneer, t]\n{EMPTY}\n\nHobgoblin II x9")
+    assert "Drone bay: 45 / 40" in r["verdict"]
+
+
+def test_an_unknown_cargo_item_is_listed_but_does_not_stop_a_verdict():
+    r = run(f"[Pioneer, t]\n{EMPTY}\n\nHobgoblin II x2\n\nMystery Goo x3")
+    assert r["verdict"] == "fits"
+    assert r["not_found"] == ["Mystery Goo"]
+
+
+def test_fitting_modules_and_rigs_add_to_the_ships_output():
+    # Co-Processor I: 320 x 1.08 x 1.25 = 432. The power core adds 10
+    # before the skill, (50 + 10) x 1.25 = 75, and the router rig 10%.
+    r = run("[Pioneer, t]\nCo-Processor I\nMicro Auxiliary Power Core I\n\n"
+            "[Empty Med slot]\n\n[Empty High slot]\n\nSmall Ancillary Current Router I")
+    assert r["cpu"] == "CPU 15 / 432 tf"
+    assert r["powergrid"] == "Powergrid 1 / 82.5 MW"
+    # Processor Overclocking Unit: 320 x 1.25 x 1.071.
+    r = run("[Pioneer, t]\n" + EMPTY.rsplit("\n", 1)[0] + "\nSmall Processor Overclocking Unit I")
+    assert r["cpu"].endswith("/ 428.4 tf")
+
+
+def test_a_module_we_know_nothing_about_is_unknown_never_fits():
+    r = run("[Pioneer, t]\nMining Laser Upgrade I\n\n[Empty Med slot]\n\n"
+            "Miner II\nMystery Gun")
+    assert r["verdict"].startswith("unknown:")
+    assert "Mystery Gun" in r["verdict"]
+    assert "at least" in r["cpu"]
+
+
+def test_a_module_in_the_wrong_section_is_unknown():
+    r = run("[Pioneer, x]\nMiner II")  # a high-slot module in the lows
+    assert r["verdict"].startswith("unknown:")
+
+
+def test_strategic_cruisers_are_unknown_for_now():
+    assert run("[Tengu, x]\n" + EMPTY)["verdict"].startswith("unknown: Strategic")
+
+
+# ---------- the evaluator on its own ----------
+
+class Made:
+    """A few hand-made items, effects and attributes."""
+
+    def __init__(self, types, effects, stackable=True):
+        self.types, self.effects, self.stackable = types, effects, stackable
+
+    def type(self, type_id):
+        attrs, effects = self.types[type_id]
+        return {"group_id": 1, "volume": 0, "attrs": attrs, "effects": effects}
+
+    def effect(self, effect_id):
+        return {"name": f"effect{effect_id}", "category": 0,
+                "modifiers": self.effects[effect_id]}
+
+    def attribute(self, attribute_id):
+        return {"name": f"attr{attribute_id}", "default": 0,
+                "stackable": self.stackable}
+
+
+def mod(op, modified, modifying, func="ItemModifier", domain="shipID", **target):
+    return {"operator": op, "modified_attribute_id": modified,
+            "modifying_attribute_id": modifying, "func": func,
+            "domain": domain, **target}
+
+
+def evaluate(types, effects, sources, wanted, stackable=True):
+    d = Dogma(Made(types, effects, stackable))
+    for key, type_id, kind in sources:
+        d.add(key, type_id, kind)
+    d.link([key for key, *_ in sources])
+    return d, d.value(*wanted)
+
+
+def test_operators_apply_in_the_games_order():
+    # ((100 x 2) + 10) x 3 x 1.5, whatever order they are listed in.
+    types = {1: ({48: 100}, []),
+             2: ({1: 2, 2: 10, 3: 3, 4: 50}, [7])}
+    effects = {7: [mod(6, 48, 4), mod(4, 48, 3), mod(2, 48, 2), mod(0, 48, 1)]}
+    _, cpu = evaluate(types, effects, [("ship", 1, "ship"), ("m", 2, "module")],
+                      ("ship", 48))
+    assert cpu == 945
+
+
+def test_a_skills_bonus_is_scaled_by_its_level():
+    # The skill's own effect multiplies its 5% by its level (280), and its
+    # other effect passes that on to the ship.
+    types = {1: ({48: 100}, []), 2: ({424: 5, 280: 0}, [8, 9])}
+    effects = {8: [mod(0, 424, 280, domain="itemID")], 9: [mod(6, 48, 424)]}
+    d = Dogma(Made(types, effects))
+    d.add("ship", 1, "ship")
+    d.add("skill", 2, "skill", level=3)
+    d.link(["ship", "skill"])
+    assert round(d.value("ship", 48), 6) == 115
+
+
+def test_a_modifier_with_no_target_is_flagged_unless_repeated_with_one():
+    types = {1: ({50: 10}, []), 2: ({1: 5}, [7])}
+    lone = mod(6, 50, 1, func="LocationRequiredSkillModifier")
+    sources = [("ship", 1, "ship"), ("m", 2, "module")]
+    d, _ = evaluate(types, {7: [lone]}, sources, ("m", 50))
+    assert d.unreadable == ["effect7 doesn't say what it applies to"]
+    d, _ = evaluate(types, {7: [lone, {**lone, "skill_type_id": 9}]}, sources, ("m", 50))
+    assert d.unreadable == []
+
+
+def test_two_unstackable_multipliers_are_flagged_not_guessed():
+    types = {1: ({48: 100}, []), 2: ({1: 1.1}, [7]), 3: ({1: 1.1}, [7])}
+    effects = {7: [mod(4, 48, 1)]}
+    d, _ = evaluate(types, effects, [("ship", 1, "ship"), ("a", 2, "module"),
+                                     ("b", 3, "module")], ("ship", 48), stackable=False)
+    assert d.unreadable == ["stacking penalties on attr48"]
+
+
+def test_a_modifier_that_depends_on_itself_does_not_loop():
+    types = {1: ({48: 100}, [7])}
+    effects = {7: [mod(6, 48, 48)]}
+    d, _ = evaluate(types, effects, [("ship", 1, "ship")], ("ship", 48))
+    assert d.unreadable == ["a modifier that depends on itself"]
+
+
+# ---------- the cache ----------
+
+class Reply:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
+def test_the_cache_empties_itself_when_the_game_moves_on():
+    import httpx
+    with tempfile.TemporaryDirectory() as tmp:
+        data = GameData(Path(tmp) / "cache.sqlite")
+        row = lambda: data.db.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+        fill = lambda: data.db.execute("INSERT OR REPLACE INTO data VALUES ('types', 1, '{}')")
+
+        fill()
+        data.versions = lambda: ("5", "5")
+        assert data.freshness(now=10_000) == ""
+        assert row() == 0                  # filled before builds were recorded: no known age
+
+        fill()
+        data.versions = lambda: ("6", "6")
+        assert data.freshness(now=10_010) == ""
+        assert row() == 1                  # an hour hasn't passed, so no check at all
+
+        assert data.freshness(now=14_000) == ""
+        assert row() == 0                  # the game moved to 6 and so did EVE Ref
+
+        fill()
+        data.versions = lambda: ("7", "6")  # patched, but EVE Ref hasn't caught up
+        note = data.freshness(now=18_000)
+        assert row() == 1                  # nothing newer to fetch, so keep what we have
+        assert "build 6" in note and "game is on 7" in note
+        assert data.freshness(now=18_100) == note   # remembered between checks
+
+        data.versions = lambda: ("7", "7")
+        assert data.freshness(now=22_000) == ""
+        assert row() == 0                  # caught up: refetch
+
+        def down():
+            raise httpx.ConnectError("no route")
+        fill()
+        data.versions = down
+        assert data.freshness(now=30_000) == ""
+        assert row() == 1                  # can't tell, so leave the cache alone
+        data.db.close()
+
+
+def test_game_data_is_fetched_once_then_kept_in_sqlite():
+    calls = []
+    body = {"type_id": 5, "group_id": 9, "volume": 2.5, "name": "x",
+            "dogma_attributes": {"50": {"attribute_id": 50, "value": 8.0}},
+            "dogma_effects": {"12": {"effect_id": 12, "is_default": False}}}
+    original = fitdata.http.get
+    fitdata.http.get = lambda url: calls.append(url) or Reply(body)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.sqlite"
+            data = GameData(path)
+            first = data.type(5)
+            assert first == {"group_id": 9, "volume": 2.5, "attrs": {50: 8.0},
+                             "effects": [12]}
+            assert data.type(5) == first
+            assert len(calls) == 1 and calls[0].endswith("/types/5")
+            data.db.close()
+            # A new connection to the same file still has it.
+            data = GameData(path)
+            assert data.type(5) == first and len(calls) == 1
+            data.clear()
+            data.type(5)
+            assert len(calls) == 2
+            data.db.close()
+    finally:
+        fitdata.http.get = original
 
 
 if __name__ == "__main__":

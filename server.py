@@ -18,6 +18,7 @@ Use the project's own Python for both: .venv/bin/python on Linux/macOS,
 """
 
 import re
+import sqlite3
 import sys
 import time
 from collections import Counter, defaultdict
@@ -30,6 +31,8 @@ from mcp.types import ToolAnnotations
 from eve_common import (PATCH_NOTES, esi_get, esi_get_all, esi_post, find_id,
                         killmail, load_tokens, names, setting,
                         zkill_system_kills)
+from fitdata import GameData
+from fitting import REQUIRED_SKILLS, check_fit, eft_fit
 
 mcp = MCPServer(
     "eve",
@@ -143,10 +146,6 @@ def hub_prices(type_id, hub):
     }, lowest
 
 
-# How ESI says "this needs skill X at level Y": six pairs of dogma
-# attributes, one holding the skill's type ID and one the level.
-REQUIRED_SKILLS = ((182, 277), (183, 278), (184, 279),
-                   (1285, 1286), (1289, 1287), (1290, 1288))
 SKILL_RANK, PRIMARY, SECONDARY = 275, 180, 181
 TRAINING_ATTRIBUTES = {164: "charisma", 165: "intelligence", 166: "memory",
                        167: "perception", 168: "willpower"}
@@ -161,6 +160,23 @@ def dogma(type_id):
         _dogma[type_id] = {a["attribute_id"]: a["value"]
                            for a in t.get("dogma_attributes", [])}
     return _dogma[type_id]
+
+
+def active_levels(sheet):
+    """{skill_id: level} the character can use right now. An Alpha clone
+    can have a skill trained higher than it is active, and the game fits
+    ships with the active level."""
+    return {s["skill_id"]: s["active_skill_level"] for s in sheet["skills"]}
+
+
+_game = []
+
+
+def game_data():
+    """The fitting check's cache of static game data (fitdata.py)."""
+    if not _game:
+        _game.append(GameData())
+    return _game[0]
 
 
 def required_skills(type_id, found=None):
@@ -484,8 +500,18 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
     with the level needed, the level held and how long it takes to train.
     Times assume an Omega clone. An Alpha trains at half speed, and the
     times are doubled when the character is visibly Alpha, but an Alpha
-    can't always be told apart. Checks skills only, not whether the fit
-    has the CPU or powergrid."""
+    can't always be told apart.
+
+    Given a whole EFT fit it also checks that the fit fits, using the
+    character's own skills: CPU, powergrid, calibration, slots, turret and
+    launcher hardpoints and drone bandwidth, in a "fits" section with a
+    verdict. Run this before suggesting any fit, and don't call a fit
+    workable unless the verdict says "fits". "probably doesn't fit" means
+    some effect couldn't be read, so the figures may be off. "too close to call" means a
+    figure is within 5% of its limit: say so and send the user to the
+    game's fitting window. "unknown" means something couldn't be worked
+    out. The "not_modelled" line lists what isn't counted, so mention it
+    when it matters. For a single name there is no fitting check."""
     char_id, who = character(character_name)
     asked = fit_items(ship_or_fit)
     if not asked:
@@ -547,6 +573,16 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
     unknown = [name for name in asked if name.lower() not in recognised]
     if unknown:
         result["not_recognised"] = unknown
+    fit = eft_fit(ship_or_fit)
+    if fit:
+        ids = {r["name"].lower(): r["id"] for r in resolved}
+        levels = active_levels(sheet)
+        try:
+            result["fits"] = check_fit(fit, ids, levels, game_data())
+        except (httpx.HTTPError, sqlite3.Error) as e:
+            # The skills part above is still good, so don't lose it.
+            result["fits"] = {"verdict": "unknown: couldn't get the game data "
+                                         f"the fitting check needs ({e})"}
     return result
 
 
@@ -723,7 +759,10 @@ def check():
 
 
 if __name__ == "__main__":
-    if "--check" in sys.argv:
+    if "--clear-fit-cache" in sys.argv:
+        game_data().clear()
+        print("Cleared. The next fit check fetches what it needs afresh.")
+    elif "--check" in sys.argv:
         check()
     else:
         mcp.run()

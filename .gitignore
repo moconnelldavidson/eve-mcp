@@ -9,3 +9,4 @@ tokens.lock
 __pycache__/
 *.pyc
 .pytest_cache/
+fitdata.sqlite

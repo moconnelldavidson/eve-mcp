@@ -12,7 +12,7 @@ characters, plus public game data. Everything it does is read-only.
 | `get_wallet` | Balance and recent journal entries | yes |
 | `get_location` | System, security, station, ship, online | yes |
 | `get_assets` | Items by station, most valuable first, with estimated value | yes |
-| `can_i_fly` | Missing skills and training time for a ship, module or pasted fit | yes |
+| `can_i_fly` | Missing skills and training time for a ship, module or pasted fit. For a fit, also whether it fits: CPU, powergrid, calibration, slots, hardpoints, drone bandwidth | yes |
 | `market_price` | Best buy/sell at Jita, Amarr, Dodixie, Rens or Hek, or all five compared, with the 30-day average | no |
 | `item_info` | Group, volume, in-game description | no |
 | `system_info` | Security, region, last hour's jumps and kills. For wormholes, class and zKillboard's recent kills | no |
@@ -21,6 +21,8 @@ characters, plus public game data. Everything it does is read-only.
 Files:
 - `server.py`: the MCP server. Read this one first: each tool is a short function.
 - `eve_common.py`: settings, sign-in tokens, talking to ESI
+- `fitting.py`: the fit check behind `can_i_fly`: an EFT parser and a small dogma evaluator
+- `fitdata.py`: the game data that check reads (items, effects, attributes), cached in `fitdata.sqlite` (git-ignored)
 - `auth.py`: one-off login per character
 - `.env`: your app's ID and secret (you make this, git-ignored)
 - `tokens.json`: sign-in tokens (made by `auth.py`, git-ignored, keep it private)
@@ -278,6 +280,10 @@ The more useful ones make an assistant combine several:
 
 - "Can I afford a Vexor Navy Issue, and where is it cheapest?"
 - "Can I fly a Stratios yet? If not, how long?"
+- "Will this fit actually fit, with my skills?" (paste the fit after it).
+  `can_i_fly` adds up CPU, powergrid, calibration, slots, hardpoints and
+  drone bandwidth, and says what it didn't count. Within 5% of a limit it
+  says too close to call, and you check the game's fitting window.
 - "Is it safe to fly to Jita from where I am right now?"
 - "I'm away from the 20th to the 30th. Will my skill queue last?"
 - "What's the most valuable thing I've left somewhere stupid?"
@@ -345,9 +351,19 @@ to look. No new tools for it.
 - **What it can read:** for each character you sign in, their skills and
   skill queue, wallet balance and journal, location, ship, training attributes,
   online status and assets. Nothing else, and only what the seven scopes above allow.
-- **Who it talks to:** CCP's login and API servers, and zKillboard when
-  you ask about a wormhole system. zKillboard is sent the system's ID and
-  the `EVE_USER_AGENT` you set, and nothing about your characters.
+- **Who it talks to:** CCP's login and API servers, zKillboard when
+  you ask about a wormhole system, and [EVE Ref](https://everef.net/) when
+  you paste a fit. zKillboard is sent the system's ID and EVE Ref the IDs
+  of items and skills in game data, each with the `EVE_USER_AGENT` you
+  set, and nothing about your characters. EVE Ref's answers are kept in
+  `fitdata.sqlite`. The first fit check takes a few seconds to fill it, and
+  later ones need no requests. Once an hour a fit check compares the game's
+  build (from ESI's status page) with the build EVE Ref's data is from, and
+  empties the cache itself when EVE Ref has newer data. If a patch is out
+  and EVE Ref hasn't caught up, the result says so. `server.py
+  --clear-fit-cache` empties it by hand.
+  EVE Ref is used because ESI leaves out which skill a "modules requiring
+  skill X" bonus points at.
 - **What it can change:** nothing. Every scope is read-only and the server
   makes no writes to EVE.
 - **Where secrets live:** your app's ID and secret in `.env`, your sign-in
@@ -370,7 +386,10 @@ new permission, add it to `SCOPES` in `eve_common.py`, tick it on the app,
 and run `auth.py` again.
 
 There are small offline tests of the security-status rounding, the fit
-parser, the training-time sums and the wormhole kill summary:
+parser, the fitting check, the training-time sums and the wormhole kill
+summary. The fitting tests run on game data recorded in
+`tests/fixtures/dogma.json`. `tests/record_fixtures.py` records it again
+if a test needs another item:
 
 ```bash
 .venv/bin/python tests/test_sec.py

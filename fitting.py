@@ -312,7 +312,7 @@ def check_fit(fit, ids, levels, data):
     over, close = [], []
     for label, used, limit, unit in (("CPU", cpu_used, cpu_out, "tf"),
                                      ("Powergrid", power_used, power_out, "MW")):
-        if used > limit:
+        if round(used - limit, 6) > 0:
             over.append(f"{label} is {num(used - limit)} {unit} over")
         elif used > limit * 0.95:
             close.append(label)
@@ -322,7 +322,7 @@ def check_fit(fit, ids, levels, data):
               ("Drone bay", bay, bay_limit)]
     counts += [(f"{s.title()} slots", slots_used[s], get("ship", SLOTS[s])) for s in SLOTS]
     hard = list(dict.fromkeys(broken)) + [f"{label}: {num(used)} / {num(limit)}"
-                     for label, used, limit in counts if used > limit]
+                     for label, used, limit in counts if round(used - limit, 6) > 0]
 
     reason = "; ".join(unknown + dogma.unreadable)
     soft = [] if unknown else over

@@ -38,6 +38,15 @@ ITEMS = [
     "Cap Recharger II", "Arbalest Compact Light Missile Launcher",
     "Small Kinetic Shield Reinforcer I", "Scourge Light Missile",
     "Inferno Light Missile", "Mjolnir Light Missile",
+    "Stratios", "Imperial Navy 1600mm Steel Plates",
+    "Centum C-Type Medium Armor Repairer", "Centii A-Type Multispectrum Coating",
+    "Thukker Large Cap Battery", "Cargo Scanner II",
+    "50MN Y-T8 Compact Microwarpdrive", "Omnidirectional Tracking Link II",
+    "Zeugma Integrated Analyzer", "Sisters Core Probe Launcher",
+    "Medium Explosive Armor Reinforcer I", "Medium Auxiliary Nano Pump II",
+    "Hammerhead II", "Ogre II", "Warrior II", "Vespa EC-600", "Hornet EC-300",
+    "Imperial Navy Curator", "'Integrated' Ogre", "Sisters Core Scanner Probe",
+    "Tracking Speed Script", "Optimal Range Script",
     "Salvager I", "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
     "Strip Miner I", "Medium EM Shield Reinforcer I", "Hornet I",
 ]
@@ -51,7 +60,7 @@ OUT = Path(__file__).resolve().parent / "fixtures" / "dogma.json"
 
 
 def main():
-    wanted = ITEMS + SKILLS
+    wanted = list(dict.fromkeys(ITEMS + SKILLS))  # ESI refuses repeats
     found = esi_post("/universe/ids/", wanted).get("inventory_types", [])
     ids = {r["name"].lower(): r["id"] for r in found}
     for name in wanted:

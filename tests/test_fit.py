@@ -334,6 +334,56 @@ def test_only_the_active_skill_level_counts_on_an_alpha_clone():
     assert active_levels(sheet) == {1: 3, 2: 4}
 
 
+def test_matches_the_game_for_a_stratios_the_character_cannot_fly():
+    # Copied from the in-game fitting window: 161.5 tf CPU left of 500, and
+    # powergrid 7.7 MW over its 1,150. The check doesn't care that the pilot
+    # lacks the skills to fly the ship. The drone bay holds exactly 400 m3
+    # of drones (bandwidth only limits how many launch), and the scripts,
+    # paste and probes in the cargo count for nothing.
+    stratios = """[Stratios, Brother Grimoire's Exploration Stratios]
+Damage Control II
+Imperial Navy 1600mm Steel Plates
+Centum C-Type Medium Armor Repairer
+Centii A-Type Multispectrum Coating
+Centii A-Type Multispectrum Coating
+
+Thukker Large Cap Battery
+Cargo Scanner II
+50MN Y-T8 Compact Microwarpdrive
+Omnidirectional Tracking Link II
+Zeugma Integrated Analyzer
+
+[Empty High slot]
+Covert Ops Cloaking Device II
+Sisters Core Probe Launcher
+
+Medium Explosive Armor Reinforcer I
+Medium Auxiliary Nano Pump II
+Medium Auxiliary Nano Pump II
+
+
+
+Hammerhead II x5
+Ogre II x3
+Warrior II x15
+Vespa EC-600 x5
+Hornet EC-300 x5
+Imperial Navy Curator x4
+'Integrated' Ogre x1
+
+Sisters Core Scanner Probe x16
+Tracking Speed Script x1
+Nanite Repair Paste x307
+Optimal Range Script x1"""
+    r = run(stratios)
+    assert r["verdict"] == "does not fit: Powergrid is 7.72 MW over"
+    assert r["cpu"] == "CPU 338.5 / 500 tf"                # 500 - 161.5
+    assert r["powergrid"] == "Powergrid 1,157.72 / 1,150 MW"
+    assert r["calibration"] == "Calibration 350 / 350"
+    assert r["drone_bay"] == "Drone bay 400 / 400 m3"
+    assert "not_found" not in r
+
+
 def test_a_higher_skill_level_shrinks_the_penalty_more():
     # Mining Upgrades V: 7.5% each, 240 x 1.075^2 = 277.35, plus 129.
     r = run(TOYO, mining_upgrades=5)

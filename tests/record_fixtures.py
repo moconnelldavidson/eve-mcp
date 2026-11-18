@@ -33,6 +33,11 @@ ITEMS = [
     "Scan Rangefinding Array I", "Interdiction Nullifier I",
     "Small Polycarbon Engine Housing I", "Small Gravity Capacitor Upgrade II",
     "Sisters Core Scanner Probe", "Expanded Probe Launcher I",
+    "Hawk", "Ballistic Control System II", "Damage Control I",
+    "1MN Afterburner II", "Small Shield Booster II", "Small Shield Extender II",
+    "Cap Recharger II", "Arbalest Compact Light Missile Launcher",
+    "Small Kinetic Shield Reinforcer I", "Scourge Light Missile",
+    "Inferno Light Missile", "Mjolnir Light Missile",
     "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
     "Strip Miner I", "Medium EM Shield Reinforcer I", "Hornet I",
 ]
@@ -40,7 +45,7 @@ SKILLS = [
     "CPU Management", "Power Grid Management", "Mining Upgrades",
     "Shield Upgrades", "Weapon Upgrades", "Advanced Weapon Upgrades",
     "Mining", "Gunnery", "Missile Launcher Operation", "Mining Destroyer",
-    "Covert Ops", "Caldari Frigate", "Cloaking",
+    "Covert Ops", "Caldari Frigate", "Cloaking", "Energy Grid Upgrades",
 ]
 OUT = Path(__file__).resolve().parent / "fixtures" / "dogma.json"
 

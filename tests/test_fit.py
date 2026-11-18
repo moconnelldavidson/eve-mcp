@@ -103,7 +103,8 @@ class Recorded:
 MAXED = ["CPU Management", "Power Grid Management", "Mining Upgrades",
          "Shield Upgrades", "Weapon Upgrades", "Advanced Weapon Upgrades",
          "Mining", "Gunnery", "Missile Launcher Operation",
-         "Mining Destroyer", "Covert Ops", "Caldari Frigate", "Cloaking"]
+         "Mining Destroyer", "Covert Ops", "Caldari Frigate", "Cloaking",
+         "Energy Grid Upgrades"]
 
 
 def run(eft, **levels):
@@ -216,6 +217,44 @@ Expanded Probe Launcher I x1"""
     assert r["verdict"] == "fits"
     assert r["cpu"] == "CPU 201 / 375 tf"                 # 375 - 174
     assert r["powergrid"] == "Powergrid 21 / 33.75 MW"    # 33.8 - 12.8
+
+
+def test_matches_the_game_for_a_missile_hawk():
+    # Copied from the in-game fitting window, for Advanced Weapon Upgrades
+    # III: 2.3 tf CPU and 13.4 MW powergrid left, of 237.5 and 56.25. Weapon
+    # Upgrades V cuts each launcher's 16 tf to 12, Energy Grid Upgrades V
+    # the Cap Recharger's 15 tf to 11.25, and Advanced Weapon Upgrades III
+    # takes 6% off the launchers' powergrid.
+    hawk = """[Hawk, MissileHawk]
+Ballistic Control System II
+Damage Control I
+
+1MN Afterburner II
+Small Shield Booster II
+Small Shield Extender II
+Multispectrum Shield Hardener II
+Cap Recharger II
+
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+Arbalest Compact Light Missile Launcher
+
+Small Core Defense Field Extender I
+Small Kinetic Shield Reinforcer I
+
+
+
+
+Scourge Light Missile x1660
+Inferno Light Missile x750
+Mjolnir Light Missile x750"""
+    r = run(hawk, advanced_weapon_upgrades=3)
+    assert r["cpu"] == "CPU 235.25 / 237.5 tf"          # 2.25 left
+    assert r["powergrid"] == "Powergrid 42.81 / 56.25 MW"  # 13.44 left
+    assert r["hardpoints"] == "Turrets 0 / 2, Launchers 4 / 4"
+    # It fits, with under 1% to spare, which is why the verdict hedges.
+    assert r["verdict"].startswith("too close to call: CPU")
 
 
 def test_a_higher_skill_level_shrinks_the_penalty_more():

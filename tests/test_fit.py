@@ -182,6 +182,42 @@ Hornet I x5"""
     assert r["powergrid"] == "Powergrid 26 / 112.5 MW"  # 112.5 - 86.5
 
 
+def test_matches_the_game_for_a_covert_ops_buzzard():
+    # Copied from the in-game fitting window: 174 of 375 tf CPU and
+    # 12.8 of 33.8 MW powergrid left, for Covert Ops IV: the hull takes 80%
+    # off the cloak's 100 tf, so it costs 20 (it would be free at V). Several
+    # modules cost no CPU or power at all.
+    buzzard = """[Buzzard, Starlet]
+Micro Auxiliary Power Core II
+Nanofiber Internal Structure II
+Inertial Stabilizers II
+
+5MN Y-T8 Compact Microwarpdrive
+Relic Analyzer II
+Data Analyzer II
+Cargo Scanner I
+Scan Rangefinding Array I
+
+Covert Ops Cloaking Device II
+Core Probe Launcher II
+Interdiction Nullifier I
+
+Small Polycarbon Engine Housing I
+Small Gravity Capacitor Upgrade II
+
+
+
+
+Sisters Core Scanner Probe x8
+Scan Rangefinding Array I x1
+Expanded Probe Launcher I x1"""
+    r = run(buzzard, covert_ops=4, cloaking=4)
+    assert run(buzzard)["cpu"] == "CPU 181 / 375 tf"  # Covert Ops V
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 201 / 375 tf"                 # 375 - 174
+    assert r["powergrid"] == "Powergrid 21 / 33.75 MW"    # 33.8 - 12.8
+
+
 def test_a_higher_skill_level_shrinks_the_penalty_more():
     # Mining Upgrades V: 7.5% each, 240 x 1.075^2 = 277.35, plus 129.
     r = run(TOYO, mining_upgrades=5)

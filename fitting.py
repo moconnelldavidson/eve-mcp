@@ -235,9 +235,9 @@ def check_fit(fit, ids, levels, data):
         for name, count, offline in block:
             type_id = ids.get(name.lower())
             attrs = data.type(type_id)["attrs"] if type_id else {}
-            # A module needs CPU or power figures, a rig a calibration cost.
-            if not (RIG_COST in attrs if slot == "rig"
-                    else CPU_NEED in attrs or POWER_NEED in attrs):
+            # Costing no CPU or power is normal (the data then leaves the
+            # attribute out), so only an item with no data at all is missing.
+            if not attrs:
                 missing.append(name)
                 rows.append((slot, name, count, offline, []))
                 continue

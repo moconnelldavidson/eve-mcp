@@ -27,6 +27,12 @@ ITEMS = [
     "Small Ancillary Current Router I", "Small Processor Overclocking Unit I",
     "Light Missile Launcher II", "Covert Ops Cloaking Device II",
     "Core Probe Launcher II", "Damage Control II", "Nanite Repair Paste",
+    "Micro Auxiliary Power Core II", "Nanofiber Internal Structure II",
+    "Inertial Stabilizers II", "5MN Y-T8 Compact Microwarpdrive",
+    "Relic Analyzer II", "Data Analyzer II", "Cargo Scanner I",
+    "Scan Rangefinding Array I", "Interdiction Nullifier I",
+    "Small Polycarbon Engine Housing I", "Small Gravity Capacitor Upgrade II",
+    "Sisters Core Scanner Probe", "Expanded Probe Launcher I",
     "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
     "Strip Miner I", "Medium EM Shield Reinforcer I", "Hornet I",
 ]

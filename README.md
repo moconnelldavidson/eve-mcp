@@ -12,7 +12,7 @@ characters, plus public game data. Everything it does is read-only.
 | `get_wallet` | Balance and recent journal entries | yes |
 | `get_location` | System, security, station, ship, online | yes |
 | `get_assets` | Items by station, most valuable first, with estimated value | yes |
-| `can_i_fly` | Missing skills and training time for a ship, module or pasted fit | yes |
+| `can_i_fly` | Missing skills and training time for a ship, module or pasted fit. For a fit, also whether it fits: CPU, powergrid, calibration, slots, hardpoints, drone bandwidth | yes |
 | `market_price` | Best buy/sell at Jita, Amarr, Dodixie, Rens or Hek, or all five compared, with the 30-day average | no |
 | `item_info` | Group, volume, in-game description | no |
 | `system_info` | Security, region, last hour's jumps and kills. For wormholes, class and zKillboard's recent kills | no |
@@ -278,6 +278,10 @@ The more useful ones make an assistant combine several:
 
 - "Can I afford a Vexor Navy Issue, and where is it cheapest?"
 - "Can I fly a Stratios yet? If not, how long?"
+- "Will this fit actually fit, with my skills?" (paste the fit after it).
+  `can_i_fly` adds up CPU, powergrid, calibration, slots, hardpoints and
+  drone bandwidth, and says what it didn't count. Within 5% of a limit it
+  says too close to call, and you check the game's fitting window.
 - "Is it safe to fly to Jita from where I am right now?"
 - "I'm away from the 20th to the 30th. Will my skill queue last?"
 - "What's the most valuable thing I've left somewhere stupid?"
@@ -370,7 +374,7 @@ new permission, add it to `SCOPES` in `eve_common.py`, tick it on the app,
 and run `auth.py` again.
 
 There are small offline tests of the security-status rounding, the fit
-parser, the training-time sums and the wormhole kill summary:
+parser, the fitting check, the training-time sums and the wormhole kill summary:
 
 ```bash
 .venv/bin/python tests/test_sec.py

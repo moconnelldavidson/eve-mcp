@@ -21,6 +21,8 @@ characters, plus public game data. Everything it does is read-only.
 Files:
 - `server.py`: the MCP server. Read this one first: each tool is a short function.
 - `eve_common.py`: settings, sign-in tokens, talking to ESI
+- `fitting.py`: the fit check behind `can_i_fly`: an EFT parser and a small dogma evaluator
+- `fitdata.py`: the game data that check reads (items, effects, attributes), cached in `fitdata.sqlite` (git-ignored)
 - `auth.py`: one-off login per character
 - `.env`: your app's ID and secret (you make this, git-ignored)
 - `tokens.json`: sign-in tokens (made by `auth.py`, git-ignored, keep it private)
@@ -349,9 +351,15 @@ to look. No new tools for it.
 - **What it can read:** for each character you sign in, their skills and
   skill queue, wallet balance and journal, location, ship, training attributes,
   online status and assets. Nothing else, and only what the seven scopes above allow.
-- **Who it talks to:** CCP's login and API servers, and zKillboard when
-  you ask about a wormhole system. zKillboard is sent the system's ID and
-  the `EVE_USER_AGENT` you set, and nothing about your characters.
+- **Who it talks to:** CCP's login and API servers, zKillboard when
+  you ask about a wormhole system, and [EVE Ref](https://everef.net/) when
+  you paste a fit. zKillboard is sent the system's ID and EVE Ref the IDs
+  of items and skills in game data, each with the `EVE_USER_AGENT` you
+  set, and nothing about your characters. EVE Ref's answers are kept in
+  `fitdata.sqlite` (`server.py --clear-fit-cache` empties it). The first
+  fit check takes a few seconds to fill it, and later ones need no requests.
+  EVE Ref is used because ESI leaves out which skill a "modules requiring
+  skill X" bonus points at.
 - **What it can change:** nothing. Every scope is read-only and the server
   makes no writes to EVE.
 - **Where secrets live:** your app's ID and secret in `.env`, your sign-in
@@ -374,7 +382,10 @@ new permission, add it to `SCOPES` in `eve_common.py`, tick it on the app,
 and run `auth.py` again.
 
 There are small offline tests of the security-status rounding, the fit
-parser, the fitting check, the training-time sums and the wormhole kill summary:
+parser, the fitting check, the training-time sums and the wormhole kill
+summary. The fitting tests run on game data recorded in
+`tests/fixtures/dogma.json`. `tests/record_fixtures.py` records it again
+if a test needs another item:
 
 ```bash
 .venv/bin/python tests/test_sec.py

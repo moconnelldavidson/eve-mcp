@@ -18,6 +18,7 @@ Use the project's own Python for both: .venv/bin/python on Linux/macOS,
 """
 
 import re
+import sqlite3
 import sys
 import time
 from collections import Counter, defaultdict
@@ -30,6 +31,8 @@ from mcp.types import ToolAnnotations
 from eve_common import (PATCH_NOTES, esi_get, esi_get_all, esi_post, find_id,
                         killmail, load_tokens, names, setting,
                         zkill_system_kills)
+from fitdata import GameData
+from fitting import REQUIRED_SKILLS, check_fit, eft_fit
 
 mcp = MCPServer(
     "eve",
@@ -143,16 +146,11 @@ def hub_prices(type_id, hub):
     }, lowest
 
 
-# How ESI says "this needs skill X at level Y": six pairs of dogma
-# attributes, one holding the skill's type ID and one the level.
-REQUIRED_SKILLS = ((182, 277), (183, 278), (184, 279),
-                   (1285, 1286), (1289, 1287), (1290, 1288))
 SKILL_RANK, PRIMARY, SECONDARY = 275, 180, 181
 TRAINING_ATTRIBUTES = {164: "charisma", 165: "intelligence", 166: "memory",
                        167: "perception", 168: "willpower"}
 
 _dogma = {}
-_effects = {}
 
 
 def dogma(type_id):
@@ -161,15 +159,17 @@ def dogma(type_id):
         t = esi_get(f"/universe/types/{type_id}/")
         _dogma[type_id] = {a["attribute_id"]: a["value"]
                            for a in t.get("dogma_attributes", [])}
-        _effects[type_id] = {e["effect_id"] for e in t.get("dogma_effects", [])}
     return _dogma[type_id]
 
 
-def effect_ids(type_id):
-    """The IDs of an item's dogma effects. They say which slot it takes
-    and whether it uses a turret or launcher hardpoint."""
-    dogma(type_id)
-    return _effects[type_id]
+_game = []
+
+
+def game_data():
+    """The fitting check's cache of static game data (fitdata.py)."""
+    if not _game:
+        _game.append(GameData())
+    return _game[0]
 
 
 def required_skills(type_id, found=None):
@@ -217,232 +217,6 @@ def fit_items(text):
             if part and part.lower() not in (f.lower() for f in found):
                 found.append(part)
     return found
-
-
-# ---------- does it fit? ----------
-# Every ID below was checked against a live ESI response.
-
-CPU_OUTPUT, POWER_OUTPUT, CALIBRATION = 48, 11, 1132  # on the ship
-SLOTS = {"high": 14, "mid": 13, "low": 12, "rig": 1137}  # on the ship
-SLOT_EFFECTS = {"high": 12, "mid": 13, "low": 11, "rig": 2663}  # on a module
-TURRETS, LAUNCHERS = 102, 101  # hardpoints on the ship
-TURRET_FITTED, LAUNCHER_FITTED = 42, 40  # effects on a module
-DRONE_BANDWIDTH, BANDWIDTH_USED = 1271, 1272
-CPU_NEED, POWER_NEED, RIG_COST = 50, 30, 1153  # on a module
-CPU_MULTIPLIER, POWER_MULTIPLIER, POWER_INCREASE = 202, 145, 549  # Co-Processor, RCU, power core
-CPU_RIG, POWER_RIG = 424, 313  # percent added to the ship's output by a rig
-MINING_PENALTY = 1082  # percent a Mining Laser Upgrade adds to miners' CPU
-SUBSYSTEMS = 1367  # only Strategic Cruisers have this
-
-# The skill type IDs a module can require, for the skills that cut its fitting.
-GUNNERY, MISSILE_LAUNCHER_OPERATION, MINING, SHIELD_UPGRADES = 3300, 3319, 3386, 3425
-
-# Skills that change fitting, with the attribute that holds their percent
-# per level (negative when the skill makes things cheaper).
-FITTING_SKILLS = {"CPU Management": CPU_RIG, "Power Grid Management": POWER_RIG,
-                  "Mining Upgrades": 927, "Shield Upgrades": 323,
-                  "Weapon Upgrades": 310}
-
-NOT_MODELLED = (
-    "Not accounted for: ship hull bonuses, implants and boosters, "
-    "overheating, how many drones can be launched, other fitting skills, "
-    "and any fitting module or rig except Co-Processors, power cores, "
-    "reactor control and power diagnostic units, Processor Overclocking "
-    "Units and Ancillary Current Routers.")
-
-
-def eft_fit(text):
-    """An EFT fit as (hull, sections), or None if the text isn't one.
-    A section is a block between blank lines: low, mid, high, rig, then
-    drones and cargo. It holds (name, count, offline) for each item, with
-    empty slots and charges left out."""
-    lines = [line.strip() for line in text.strip().splitlines()]
-    if (not lines or not lines[0].startswith("[") or not lines[0].endswith("]")
-            or lines[0].lower().startswith("[empty")):
-        return None
-    hull = lines[0][1:-1].split(",")[0].strip()
-    sections, block = [], []
-    for line in lines[1:] + [""]:
-        if line:
-            block.append(line)
-        elif block:
-            section = []
-            for entry in block:
-                if entry.lower().startswith("[empty"):
-                    continue
-                offline = entry.endswith("/offline")
-                name = entry.split(",")[0].removesuffix("/offline").strip()
-                count = re.search(r"\s+x(\d+)$", name)
-                if count:
-                    name = name[:count.start()]
-                section.append((name, int(count.group(1)) if count else 1,
-                                offline))
-            sections.append(section)
-            block = []
-    return hull, sections
-
-
-def num(x):
-    """A figure the way the fitting window shows it: two decimals, no
-    trailing zeros."""
-    return f"{x:,.2f}".rstrip("0").rstrip(".")
-
-
-def check_fit(fit, items, levels):
-    """Whether the modules in an EFT fit (from eft_fit) fit the hull.
-    items maps a lowercase name to {"attrs": {id: value}, "effects": {id}}
-    and levels maps a lowercase skill name to the character's level.
-    Anything that can't be worked out makes the verdict "unknown", never
-    "fits"."""
-    hull_name, sections = fit
-    hull = items.get(hull_name.lower())
-    if hull is None or CPU_OUTPUT not in hull["attrs"]:
-        return {"verdict": f"unknown: no fitting figures for {hull_name}",
-                "not_modelled": NOT_MODELLED}
-    ship = hull["attrs"]
-    if SUBSYSTEMS in ship:
-        return {"verdict": "unknown: Strategic Cruisers get their slots and "
-                           "fitting from subsystems, which aren't modelled",
-                "not_modelled": NOT_MODELLED}
-
-    unknown, missing = [], []
-
-    def note(reason):
-        if reason not in unknown:
-            unknown.append(reason)
-
-    # Every listed module, rig and drone, with its figures if we have them.
-    modules, drones = [], []   # (slot, name, count, offline, data or None)
-    order = ("low", "mid", "high", "rig")  # the order EFT lists them in
-    for slot, block in zip(order, sections):
-        for name, count, offline in block:
-            data = items.get(name.lower())
-            needed = RIG_COST if slot == "rig" else None
-            known = data is not None and (
-                needed in data["attrs"] if needed
-                else CPU_NEED in data["attrs"] or POWER_NEED in data["attrs"])
-            if not known:
-                missing.append(name)
-                data = None
-            elif data["effects"] and SLOT_EFFECTS[slot] not in data["effects"]:
-                note(f"{name} is listed as a {slot}-slot item but isn't one")
-            modules.append((slot, name, count, offline, data))
-    for block in sections[len(order):]:  # drones and cargo
-        for name, count, offline in block:
-            data = items.get(name.lower())
-            if data is None:
-                missing.append(name)
-            elif BANDWIDTH_USED in data["attrs"]:
-                drones.append((count, data["attrs"][BANDWIDTH_USED]))
-
-    def bonus(skill):
-        """The fraction a skill gives at the character's level."""
-        data = items.get(skill.lower())
-        if data is None or FITTING_SKILLS[skill] not in data["attrs"]:
-            note(f"no figures for the {skill} skill")
-            return 0
-        return (data["attrs"][FITTING_SKILLS[skill]]
-                * levels.get(skill.lower(), 0) / 100)
-
-    # Offline modules still fill a slot but add and cost nothing.
-    live = [(count, d["attrs"]) for _, _, count, offline, d in modules
-            if d and not offline]
-
-    cpu_out = ship[CPU_OUTPUT]
-    power_out = ship.get(POWER_OUTPUT, 0)
-    # The game applies additions, then multipliers, then percentages.
-    power_out += sum(n * a.get(POWER_INCREASE, 0) for n, a in live)
-    for n, a in live:
-        cpu_out *= a.get(CPU_MULTIPLIER, 1) ** n
-        power_out *= a.get(POWER_MULTIPLIER, 1) ** n
-    cpu_out *= 1 + bonus("CPU Management")
-    power_out *= 1 + bonus("Power Grid Management")
-    for n, a in live:
-        cpu_out *= (1 + a.get(CPU_RIG, 0) / 100) ** n
-        power_out *= (1 + a.get(POWER_RIG, 0) / 100) ** n
-
-    # A Mining Laser Upgrade makes mining lasers cost more CPU. The Mining
-    # Upgrades skill shrinks that penalty. It doesn't cut the upgrade's own CPU.
-    mining_penalty = 1.0
-    for n, a in live:
-        if MINING_PENALTY in a:
-            mining_penalty *= (1 + a[MINING_PENALTY] / 100
-                               * (1 + bonus("Mining Upgrades"))) ** n
-
-    cpu_used = power_used = 0.0
-    for n, a in live:
-        required = {int(a[skill]) for skill, _ in REQUIRED_SKILLS if skill in a}
-        cpu, power = a.get(CPU_NEED, 0), a.get(POWER_NEED, 0)
-        if required & {GUNNERY, MISSILE_LAUNCHER_OPERATION}:
-            cpu *= 1 + bonus("Weapon Upgrades")
-        if SHIELD_UPGRADES in required:
-            power *= 1 + bonus("Shield Upgrades")
-        if MINING in required:
-            cpu *= mining_penalty
-        cpu_used += n * cpu
-        power_used += n * power
-
-    calibration = sum(n * d["attrs"][RIG_COST] for s, _, n, _, d in modules
-                      if d and s == "rig")
-    bandwidth = sum(n * used for n, used in drones)
-    turrets = sum(n for _, _, n, _, d in modules
-                  if d and TURRET_FITTED in d["effects"])
-    launchers = sum(n for _, _, n, _, d in modules
-                    if d and LAUNCHER_FITTED in d["effects"])
-    slots_used = {s: sum(n for slot, _, n, _, _ in modules if slot == s)
-                  for s in SLOTS}
-
-    # What we couldn't count only ever adds, so say "at least".
-    low = "at least " if missing else ""
-    over, close = [], []
-    for label, used, limit, unit in (
-            ("CPU", cpu_used, cpu_out, "tf"),
-            ("Powergrid", power_used, power_out, "MW")):
-        if used > limit:
-            over.append(f"{label} is {num(used - limit)} {unit} over")
-        elif used > limit * 0.95:
-            close.append(label)
-    exact = [("Calibration", calibration, ship.get(CALIBRATION, 0)),
-             ("Drone bandwidth", bandwidth, ship.get(DRONE_BANDWIDTH, 0)),
-             ("Turret hardpoints", turrets, ship.get(TURRETS, 0)),
-             ("Launcher hardpoints", launchers, ship.get(LAUNCHERS, 0))]
-    exact += [(f"{s.title()} slots", slots_used[s], ship.get(SLOTS[s], 0))
-              for s in SLOTS]
-    # CPU and powergrid depend on modelled bonuses, so an over there only
-    # counts when nothing else is uncertain. The rest are plain counts.
-    failures = [f"{label}: {num(used)} / {num(limit)}"
-                for label, used, limit in exact if used > limit]
-    if not unknown:
-        failures += over
-
-    if failures:
-        verdict = "does not fit: " + "; ".join(failures)
-    elif unknown or missing:
-        why = list(unknown)
-        if missing:
-            why.append("no fitting figures found for " + ", ".join(missing))
-        verdict = "unknown: " + "; ".join(why)
-    elif close:
-        verdict = (f"too close to call: {' and '.join(close)} within 5% of "
-                   "the limit. Check it in the game's fitting window.")
-    else:
-        verdict = "fits"
-
-    return {
-        "verdict": verdict,
-        "cpu": f"CPU {low}{num(cpu_used)} / {num(cpu_out)} tf",
-        "powergrid": f"Powergrid {low}{num(power_used)} / {num(power_out)} MW",
-        "calibration": (f"Calibration {low}{num(calibration)} / "
-                        f"{num(ship.get(CALIBRATION, 0))}"),
-        "slots": ", ".join(f"{s.title()} {slots_used[s]} / "
-                           f"{num(ship.get(SLOTS[s], 0))}" for s in SLOTS),
-        "hardpoints": (f"Turrets {low}{turrets} / {num(ship.get(TURRETS, 0))}, "
-                       f"Launchers {low}{launchers} / "
-                       f"{num(ship.get(LAUNCHERS, 0))}"),
-        "drone_bandwidth": (f"Drone bandwidth {low}{num(bandwidth)} / "
-                            f"{num(ship.get(DRONE_BANDWIDTH, 0))} Mbit/s"),
-        "not_modelled": NOT_MODELLED,
-    }
 
 
 # Wormhole regions are named by class: A-R00001 is C1 space, B- is C2
@@ -725,7 +499,8 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
     character's own skills: CPU, powergrid, calibration, slots, turret and
     launcher hardpoints and drone bandwidth, in a "fits" section with a
     verdict. Run this before suggesting any fit, and don't call a fit
-    workable unless the verdict says "fits". "too close to call" means a
+    workable unless the verdict says "fits". "probably doesn't fit" means
+    some effect couldn't be read, so the figures may be off. "too close to call" means a
     figure is within 5% of its limit: say so and send the user to the
     game's fitting window. "unknown" means something couldn't be worked
     out. The "not_modelled" line lists what isn't counted, so mention it
@@ -793,16 +568,14 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
         result["not_recognised"] = unknown
     fit = eft_fit(ship_or_fit)
     if fit:
-        skill_ids = {r["name"]: r["id"] for r in esi_post(
-            "/universe/ids/", list(FITTING_SKILLS)).get("inventory_types", [])}
-        items = {r["name"].lower(): {"attrs": dogma(r["id"]),
-                                     "effects": effect_ids(r["id"])}
-                 for r in resolved}
-        items.update({name.lower(): {"attrs": dogma(skill), "effects": set()}
-                      for name, skill in skill_ids.items()})
-        levels = {name.lower(): held.get(skill, {}).get("active_skill_level", 0)
-                  for name, skill in skill_ids.items()}
-        result["fits"] = check_fit(fit, items, levels)
+        ids = {r["name"].lower(): r["id"] for r in resolved}
+        levels = {s["skill_id"]: s["active_skill_level"] for s in sheet["skills"]}
+        try:
+            result["fits"] = check_fit(fit, ids, levels, game_data())
+        except (httpx.HTTPError, sqlite3.Error) as e:
+            # The skills part above is still good, so don't lose it.
+            result["fits"] = {"verdict": "unknown: couldn't get the game data "
+                                         f"the fitting check needs ({e})"}
     return result
 
 
@@ -979,7 +752,10 @@ def check():
 
 
 if __name__ == "__main__":
-    if "--check" in sys.argv:
+    if "--clear-fit-cache" in sys.argv:
+        game_data().clear()
+        print("Cleared. The next fit check fetches what it needs afresh.")
+    elif "--check" in sys.argv:
         check()
     else:
         mcp.run()

@@ -154,6 +154,34 @@ def test_the_real_fit_is_over_on_cpu():
     assert "unreadable" not in r["not_modelled"]
 
 
+def test_matches_the_game_for_a_procurer():
+    # Copied from the in-game fitting window for a character with Mining
+    # Upgrades I: 53.6 of 387.5 tf CPU and 86.5 of 112.5 MW left.
+    procurer = """[Procurer, Toyo Rocks]
+Mining Laser Upgrade I
+Mining Laser Upgrade I
+Damage Control II
+
+Mining Survey Chipset II
+Multispectrum Shield Hardener II
+Multispectrum Shield Hardener II
+
+Strip Miner I
+Strip Miner I
+
+Medium EM Shield Reinforcer I
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+
+
+
+Hornet I x5"""
+    r = run(procurer, mining_upgrades=1)
+    assert r["verdict"] == "fits"
+    assert r["cpu"] == "CPU 333.88 / 387.5 tf"     # 387.5 - 53.6 = 333.9
+    assert r["powergrid"] == "Powergrid 26 / 112.5 MW"  # 112.5 - 86.5
+
+
 def test_a_higher_skill_level_shrinks_the_penalty_more():
     # Mining Upgrades V: 7.5% each, 240 x 1.075^2 = 277.35, plus 129.
     r = run(TOYO, mining_upgrades=5)

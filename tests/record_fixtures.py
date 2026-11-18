@@ -27,7 +27,8 @@ ITEMS = [
     "Small Ancillary Current Router I", "Small Processor Overclocking Unit I",
     "Light Missile Launcher II", "Covert Ops Cloaking Device II",
     "Core Probe Launcher II", "Damage Control II", "Nanite Repair Paste",
-    "Tengu",
+    "Tengu", "Procurer", "Mining Survey Chipset II", "Multispectrum Shield Hardener II",
+    "Strip Miner I", "Medium EM Shield Reinforcer I", "Hornet I",
 ]
 SKILLS = [
     "CPU Management", "Power Grid Management", "Mining Upgrades",

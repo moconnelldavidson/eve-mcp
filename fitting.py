@@ -215,6 +215,7 @@ def check_fit(fit, ids, levels, data):
     if hull_id is None:
         return {"verdict": f"unknown: {hull_name} isn't an item EVE recognises",
                 "not_modelled": NOT_MODELLED}
+    stale = data.freshness()  # may empty the cache, so do it first
     dogma = Dogma(data)
     dogma.add("ship", hull_id, "ship")
     if SUBSYSTEMS in dogma.items["ship"]["attrs"]:
@@ -360,7 +361,7 @@ def check_fit(fit, ids, levels, data):
                if bandwidth > bandwidth_limit else "")),
         "not_modelled": NOT_MODELLED + (
             f" Could not be read, so figures may be off: {'; '.join(dogma.unreadable)}."
-            if dogma.unreadable else ""),
+            if dogma.unreadable else "") + (f" {stale}" if stale else ""),
     }
     if not_found:
         result["not_found"] = not_found

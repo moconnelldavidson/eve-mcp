@@ -99,6 +99,9 @@ class Recorded:
     def preload(self, type_ids):
         pass
 
+    def freshness(self):
+        return ""
+
 
 MAXED = ["CPU Management", "Power Grid Management", "Mining Upgrades",
          "Shield Upgrades", "Weapon Upgrades", "Advanced Weapon Upgrades",
@@ -608,6 +611,46 @@ class Reply:
 
     def json(self):
         return self.body
+
+
+def test_the_cache_empties_itself_when_the_game_moves_on():
+    import httpx
+    with tempfile.TemporaryDirectory() as tmp:
+        data = GameData(Path(tmp) / "cache.sqlite")
+        row = lambda: data.db.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+        fill = lambda: data.db.execute("INSERT OR REPLACE INTO data VALUES ('types', 1, '{}')")
+
+        fill()
+        data.versions = lambda: ("5", "5")
+        assert data.freshness(now=10_000) == ""
+        assert row() == 0                  # filled before builds were recorded: no known age
+
+        fill()
+        data.versions = lambda: ("6", "6")
+        assert data.freshness(now=10_010) == ""
+        assert row() == 1                  # an hour hasn't passed, so no check at all
+
+        assert data.freshness(now=14_000) == ""
+        assert row() == 0                  # the game moved to 6 and so did EVE Ref
+
+        fill()
+        data.versions = lambda: ("7", "6")  # patched, but EVE Ref hasn't caught up
+        note = data.freshness(now=18_000)
+        assert row() == 1                  # nothing newer to fetch, so keep what we have
+        assert "build 6" in note and "game is on 7" in note
+        assert data.freshness(now=18_100) == note   # remembered between checks
+
+        data.versions = lambda: ("7", "7")
+        assert data.freshness(now=22_000) == ""
+        assert row() == 0                  # caught up: refetch
+
+        def down():
+            raise httpx.ConnectError("no route")
+        fill()
+        data.versions = down
+        assert data.freshness(now=30_000) == ""
+        assert row() == 1                  # can't tell, so leave the cache alone
+        data.db.close()
 
 
 def test_game_data_is_fetched_once_then_kept_in_sqlite():

@@ -356,8 +356,12 @@ to look. No new tools for it.
   you paste a fit. zKillboard is sent the system's ID and EVE Ref the IDs
   of items and skills in game data, each with the `EVE_USER_AGENT` you
   set, and nothing about your characters. EVE Ref's answers are kept in
-  `fitdata.sqlite` (`server.py --clear-fit-cache` empties it). The first
-  fit check takes a few seconds to fill it, and later ones need no requests.
+  `fitdata.sqlite`. The first fit check takes a few seconds to fill it, and
+  later ones need no requests. Once an hour a fit check compares the game's
+  build (from ESI's status page) with the build EVE Ref's data is from, and
+  empties the cache itself when EVE Ref has newer data. If a patch is out
+  and EVE Ref hasn't caught up, the result says so. `server.py
+  --clear-fit-cache` empties it by hand.
   EVE Ref is used because ESI leaves out which skill a "modules requiring
   skill X" bonus points at.
 - **What it can change:** nothing. Every scope is read-only and the server

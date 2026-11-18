@@ -5,15 +5,20 @@ Types, dogma effects and dogma attributes come from EVE Ref
 group a "modules requiring skill X" modifier points at, and the fitting
 check can't work without that. Each record is fetched once and kept in
 fitdata.sqlite, so a fit costs no requests once its items have been seen.
-Delete the file (or run server.py --clear-fit-cache) to fetch afresh.
+Once an hour the cache checks the game's build against EVE Ref's and empties
+itself when EVE Ref has newer data (see freshness). To fetch afresh by hand,
+delete the file or run server.py --clear-fit-cache.
 """
 
 import json
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
-from eve_common import HERE, http
+import httpx
+
+from eve_common import HERE, esi_get, http
 
 REF = "https://ref-data.everef.net"
 DB_PATH = HERE / "fitdata.sqlite"
@@ -49,6 +54,8 @@ class GameData:
         self.lock = threading.Lock()
         self.db.execute("CREATE TABLE IF NOT EXISTS data "
                         "(kind TEXT, id INTEGER, body TEXT, PRIMARY KEY (kind, id))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS meta "
+                        "(key TEXT PRIMARY KEY, value TEXT)")
 
     def get(self, kind, record_id):
         with self.lock:
@@ -87,3 +94,46 @@ class GameData:
         with self.lock:
             self.db.execute("DELETE FROM data")
             self.db.commit()
+
+    def meta(self, key, default=None):
+        with self.lock:
+            row = self.db.execute("SELECT value FROM meta WHERE key = ?",
+                                  (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, **values):
+        with self.lock:
+            self.db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                                [(k, str(v)) for k, v in values.items()])
+            self.db.commit()
+
+    def versions(self):
+        """(the game's build, the build EVE Ref's data comes from)."""
+        r = http.get(f"{REF}/meta")
+        r.raise_for_status()
+        return str(esi_get("/status/")["server_version"]), str(r.json()["sde"]["version"])
+
+    def freshness(self, now=None):
+        """Keep the cache in step with the game, and say if it is behind.
+
+        Once an hour this compares the game's build (ESI) with the build the
+        cache was filled from (EVE Ref). When EVE Ref has newer data the cache
+        is emptied and refills on demand. Right after a patch EVE Ref can lag
+        the game by a while, and then the answer is a sentence saying so.
+        Returns "" when all is well."""
+        now = time.time() if now is None else now
+        if now - float(self.meta("checked", 0)) < 3600:
+            return self.meta("note", "")
+        self.set_meta(checked=now)  # one try an hour, even when it fails
+        try:
+            game, ref = self.versions()
+        except (httpx.HTTPError, KeyError, ValueError, RuntimeError):
+            return self.meta("note", "")
+        # A cache from before builds were recorded has no known age.
+        if ref != self.meta("build"):
+            self.clear()
+        note = ("" if game == ref else
+                f"The game data here is from build {ref} but the game is on "
+                f"{game}, so figures for anything changed in that patch may be off.")
+        self.set_meta(build=ref, note=note)
+        return note

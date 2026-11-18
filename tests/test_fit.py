@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import fitdata  # noqa: E402
 from fitdata import GameData  # noqa: E402
 from fitting import Dogma, check_fit, eft_fit  # noqa: E402
-from server import duration, fit_items, sp_for_level  # noqa: E402
+from server import active_levels, duration, fit_items, sp_for_level  # noqa: E402
 
 FIT = """[Tristan, Belt ratter]
 Drone Damage Amplifier II
@@ -112,7 +112,7 @@ def run(eft, **levels):
     (underscores for spaces, as in mining_upgrades=1)."""
     skills = {IDS[name.lower()]: 5 for name in MAXED}
     for name, level in levels.items():
-        skills[IDS[name.replace("_", " ")]] = level
+        skills[IDS[name.replace("_", " ").lower()]] = level
     return check_fit(eft_fit(eft), IDS, skills, Recorded())
 
 
@@ -219,13 +219,7 @@ Expanded Probe Launcher I x1"""
     assert r["powergrid"] == "Powergrid 21 / 33.75 MW"    # 33.8 - 12.8
 
 
-def test_matches_the_game_for_a_missile_hawk():
-    # Copied from the in-game fitting window, for Advanced Weapon Upgrades
-    # III: 2.3 tf CPU and 13.4 MW powergrid left, of 237.5 and 56.25. Weapon
-    # Upgrades V cuts each launcher's 16 tf to 12, Energy Grid Upgrades V
-    # the Cap Recharger's 15 tf to 11.25, and Advanced Weapon Upgrades III
-    # takes 6% off the launchers' powergrid.
-    hawk = """[Hawk, MissileHawk]
+HAWK = """[Hawk, MissileHawk]
 Ballistic Control System II
 Damage Control I
 
@@ -249,7 +243,15 @@ Small Kinetic Shield Reinforcer I
 Scourge Light Missile x1660
 Inferno Light Missile x750
 Mjolnir Light Missile x750"""
-    r = run(hawk, advanced_weapon_upgrades=3)
+
+
+def test_matches_the_game_for_a_missile_hawk():
+    # Copied from the in-game fitting window, for Advanced Weapon Upgrades
+    # III: 2.3 tf CPU and 13.4 MW powergrid left, of 237.5 and 56.25. Weapon
+    # Upgrades V cuts each launcher's 16 tf to 12, Energy Grid Upgrades V
+    # the Cap Recharger's 15 tf to 11.25, and Advanced Weapon Upgrades III
+    # takes 6% off the launchers' powergrid.
+    r = run(HAWK, advanced_weapon_upgrades=3)
     assert r["cpu"] == "CPU 235.25 / 237.5 tf"          # 2.25 left
     assert r["powergrid"] == "Powergrid 42.81 / 56.25 MW"  # 13.44 left
     assert r["hardpoints"] == "Turrets 0 / 2, Launchers 4 / 4"
@@ -287,6 +289,49 @@ Hobgoblin II x2"""
     assert r["powergrid"] == "Powergrid 26.5 / 62.5 MW"  # 36.0 left
     assert r["calibration"] == "Calibration 350 / 400"
     assert r["verdict"].startswith("too close to call: CPU")
+
+
+def test_with_no_fitting_skills_nothing_is_cut_or_added():
+    # These figures come from the item data by hand, not from the engine.
+    # Pioneer: each upgrade adds the full 10% to miner CPU, so
+    # 3 x 80 x 1.1 x 1.1 = 290.4, plus 60 + 16 + 40 + 13. Powergrid is
+    # 2 + 2 + 1 + 9 + 12, with the extender's 2 MW uncut. The output is
+    # the hull's own 320 tf and 50 MW.
+    zero = {name.replace(" ", "_"): 0 for name in MAXED}
+    r = run(TOYO, **zero)
+    assert r["cpu"] == "CPU 419.4 / 320 tf"
+    assert r["powergrid"] == "Powergrid 26 / 50 MW"
+    assert r["verdict"] == "does not fit: CPU is 99.4 tf over"
+
+
+def test_a_skill_the_character_lacks_is_the_same_as_level_zero():
+    zero = {name.replace(" ", "_"): 0 for name in MAXED}
+    skills = {IDS[name.lower()]: 0 for name in MAXED}
+    absent = check_fit(eft_fit(TOYO), IDS, {}, Recorded())
+    assert absent == check_fit(eft_fit(TOYO), IDS, skills, Recorded())
+    assert absent["cpu"] == run(TOYO, **zero)["cpu"]
+
+
+def test_the_cloak_costs_its_full_cpu_without_covert_ops():
+    cloak = ("[Buzzard, t]\n[Empty Low slot]\n\n[Empty Med slot]\n\n"
+             "Covert Ops Cloaking Device II")
+    assert run(cloak, covert_ops=0)["cpu"].startswith("CPU 100 /")
+
+
+def test_one_skill_level_turns_a_pass_into_a_fail():
+    # The Hawk's four launchers need 16 tf each less 5% per level of
+    # Weapon Upgrades: at V they cost 48 in all, at IV 51.2, which is 3.2
+    # more. That takes the fit from 235.25 to 238.45 of 237.5.
+    r = run(HAWK, advanced_weapon_upgrades=3, weapon_upgrades=4)
+    assert r["cpu"] == "CPU 238.45 / 237.5 tf"
+    assert r["verdict"] == "does not fit: CPU is 0.95 tf over"
+
+
+def test_only_the_active_skill_level_counts_on_an_alpha_clone():
+    sheet = {"skills": [
+        {"skill_id": 1, "trained_skill_level": 5, "active_skill_level": 3},
+        {"skill_id": 2, "trained_skill_level": 4, "active_skill_level": 4}]}
+    assert active_levels(sheet) == {1: 3, 2: 4}
 
 
 def test_a_higher_skill_level_shrinks_the_penalty_more():

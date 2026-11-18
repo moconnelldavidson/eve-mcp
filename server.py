@@ -162,6 +162,13 @@ def dogma(type_id):
     return _dogma[type_id]
 
 
+def active_levels(sheet):
+    """{skill_id: level} the character can use right now. An Alpha clone
+    can have a skill trained higher than it is active, and the game fits
+    ships with the active level."""
+    return {s["skill_id"]: s["active_skill_level"] for s in sheet["skills"]}
+
+
 _game = []
 
 
@@ -569,7 +576,7 @@ def can_i_fly(ship_or_fit: str, character_name: str | None = None) -> dict:
     fit = eft_fit(ship_or_fit)
     if fit:
         ids = {r["name"].lower(): r["id"] for r in resolved}
-        levels = {s["skill_id"]: s["active_skill_level"] for s in sheet["skills"]}
+        levels = active_levels(sheet)
         try:
             result["fits"] = check_fit(fit, ids, levels, game_data())
         except (httpx.HTTPError, sqlite3.Error) as e:
